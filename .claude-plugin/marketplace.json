@@ -1,0 +1,12 @@
+{
+  "name": "gdrive-reader-marketplace",
+  "description": "Marketplace for the Google Drive Reader plugin",
+  "owner": { "name": "Che-Kuan Shen" },
+  "plugins": [
+    {
+      "name": "gdrive-reader",
+      "source": "./plugins/gdrive-reader",
+      "description": "Read a Google Drive folder from Claude Code (OAuth, read-only)"
+    }
+  ]
+}

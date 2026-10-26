@@ -1,0 +1,35 @@
+{
+  "name": "gdrive-reader",
+  "displayName": "Google Drive Reader",
+  "version": "0.1.0",
+  "description": "Read-only access to one Google Drive folder: list it (with subfolders) and read its files, after signing in with Google OAuth.",
+  "author": { "name": "Che-Kuan Shen" },
+  "license": "MIT",
+  "keywords": ["google-drive", "oauth", "mcp"],
+  "userConfig": {
+    "folder_url": {
+      "type": "string",
+      "title": "Drive folder URL",
+      "description": "The Google Drive folder this plugin reads. The default is the take-home test folder.",
+      "default": "https://drive.google.com/drive/folders/1AU6ZW-3NFxme6388YPe98bGWWh9q_E5Y"
+    },
+    "broker_url": {
+      "type": "string",
+      "title": "Sign-in backend URL (self-host only)",
+      "description": "Leave empty to use the author's deployed backend. Set it to your own Worker URL when self-hosting.",
+      "default": ""
+    },
+    "client_id": {
+      "type": "string",
+      "title": "Google OAuth client ID (self-host only)",
+      "description": "Leave empty to use the author's OAuth client. Set it to your own Web client ID when self-hosting.",
+      "default": ""
+    },
+    "callback_port": {
+      "type": "string",
+      "title": "Sign-in callback port (optional)",
+      "description": "Leave empty for a random port. Set a fixed port only when Claude Code runs over SSH and you forward that port.",
+      "default": ""
+    }
+  }
+}
