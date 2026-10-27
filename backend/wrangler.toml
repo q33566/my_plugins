@@ -1,13 +1,16 @@
 name = "gdrive-reader-broker"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 GOOGLE_CLIENT_ID = "90797836930-srr3msslmq7c3ataf1ge29lt5nnec8ro.apps.googleusercontent.com"
+DEFAULT_FOLDER = "https://drive.google.com/drive/folders/1AU6ZW-3NFxme6388YPe98bGWWh9q_E5Y"
+# The URL Claude Code connects to; tokens are bound to it, so it must match the deployed Worker.
+MCP_RESOURCE = "https://gdrive-reader-broker.gdrive-reader-broker.workers.dev/mcp"
 # GOOGLE_CLIENT_SECRET is a secret: `npx wrangler secret put GOOGLE_CLIENT_SECRET`
 
-# 20 sign-in requests per minute per IP on /token and /refresh.
-[[ratelimits]]
-name = "RATE_LIMITER"
-namespace_id = "1001"
-simple = { limit = 20, period = 60 }
+# Registered clients, grants and token hashes (@cloudflare/workers-oauth-provider).
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "6ac18bce16a842c8a34ad5ddb1a38718"

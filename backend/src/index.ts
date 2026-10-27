@@ -1,144 +1,169 @@
 /**
- * Sign-in backend for the Google Drive Reader plugin.
+ * Google Drive Reader: a remote MCP server on Cloudflare Workers.
  *
- * Holds the Google OAuth client secret so it never ships with the plugin, and
- * stores nothing. Three routes:
- *   GET  /callback  Google redirects here; forward code/state/error to the
- *                   plugin's loopback listener (port carried inside `state`).
- *   POST /token     {code, code_verifier} -> Google token response.
- *   POST /refresh   {refresh_token}       -> Google token response.
- * The PKCE verifier stays in the plugin until /token, so a code seen in transit
- * is useless on its own.
+ * Claude Code connects to /mcp and signs in through the standard MCP authorization flow
+ * (Claude Code registers itself, then the user signs in once from /mcp). This Worker is the
+ * OAuth server for Claude Code and an OAuth client of Google:
+ *   GET /authorize  start of Claude Code's sign-in: send the browser to Google's consent screen
+ *   GET /callback   Google's redirect: swap its code for Google tokens, then finish Claude Code's sign-in
+ *   /token, /register and the metadata endpoints are served by @cloudflare/workers-oauth-provider.
+ * The Google tokens live only inside the grant, which the provider stores encrypted with a key
+ * derived from the token Claude Code holds; KV keeps hashes, never the tokens themselves.
  */
+import OAuthProvider, {
+  AuthorizationError,
+  authorizationErrorRedirect,
+  OAuthError,
+  type OAuthHelpers,
+  type TokenExchangeCallbackOptions,
+} from "@cloudflare/workers-oauth-provider";
+import { createMcpHandler } from "agents/mcp/server";
+import { consentUrl, DRIVE_SCOPE, exchangeCode, GoogleTokenError, pkce, refresh, userEmail } from "./google";
+import { createServer, type Props } from "./mcp";
+
 export interface Env {
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
-  RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
-  /** Only for local end-to-end tests against a fake Google; unset in production. */
-  GOOGLE_TOKEN_URL?: string;
+  /** The folder the tools read when Claude passes none. */
+  DEFAULT_FOLDER: string;
+  /** The exact URL Claude Code connects to; every token is bound to it. */
+  MCP_RESOURCE: string;
+  OAUTH_KV: KVNamespace;
+  OAUTH_PROVIDER: OAuthHelpers;
 }
 
-const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const STATE_RE = /^(\d{4,5})\.[A-Za-z0-9_-]{20,64}$/;
-const FORWARDED = ["code", "error", "state"];
-const RETURNED = ["access_token", "expires_in", "refresh_token", "scope", "token_type", "error", "error_description"];
-const MAX_FIELD = 2048;
+// Expire Claude Code's access token a little before Google's, so Claude Code refreshes first.
+const EARLY = 300;
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+let provider: OAuthProvider<Env> | undefined;
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    try {
-      if (url.pathname === "/callback") return callback(request, url);
-      if (url.pathname === "/token") return await exchange(request, env, url, ["code", "code_verifier"], "authorization_code");
-      if (url.pathname === "/refresh") return await exchange(request, env, url, ["refresh_token"], "refresh_token");
-      if (url.pathname === "/") return page(HOME);
-      if (url.pathname === "/privacy") return page(PRIVACY);
-      return text(404, "Not found.");
-    } catch {
-      return json(502, { error: "backend_error", error_description: "The sign-in backend could not reach Google." });
-    }
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    provider ??= new OAuthProvider<Env>({
+      apiRoute: "/mcp",
+      apiHandler: { fetch: (req: Request, e: Env, c: ExecutionContext) => createMcpHandler(createServer(e.DEFAULT_FOLDER), { allowedHostnames: [new URL(e.MCP_RESOURCE).hostname] })(req, e, c) },
+      authorizeEndpoint: "/authorize",
+      tokenEndpoint: "/token",
+      clientRegistrationEndpoint: "/register",
+      defaultHandler: { fetch: (req: Request, e: Env) => site(req, e) },
+      resourceMetadata: { resource: env.MCP_RESOURCE },
+      tokenExchangeCallback: renewGoogle,
+    } as ConstructorParameters<typeof OAuthProvider<Env>>[0]);
+    return provider.fetch(request, env, ctx);
   },
 };
 
-function callback(request: Request, url: URL): Response {
-  if (request.method !== "GET") return text(405, "Method not allowed.");
-  const state = url.searchParams.get("state") ?? "";
-  const port = Number(STATE_RE.exec(state)?.[1]);
-  if (!port || port < 1024 || port > 65535) {
-    return html(400, "This sign-in link is not valid. Start the sign-in again from Claude Code.");
+async function site(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  try {
+    if (url.pathname === "/authorize" && request.method === "GET") return await authorize(request, env, url);
+    if (url.pathname === "/callback" && request.method === "GET") return await callback(request, env, url);
+  } catch (e) {
+    if (e instanceof AuthorizationError) {
+      return e.redirectTo ? redirect(e.redirectTo) : page(400, `<p>Sign-in failed: ${escape(e.description)}</p><p>Start it again from Claude Code (<code>/mcp</code>).</p>`);
+    }
+    if (e instanceof GoogleTokenError) return page(502, `<p>${escape(e.message)}</p><p>Start the sign-in again from Claude Code (<code>/mcp</code>).</p>`);
+    throw e;
   }
-  const out = new URLSearchParams();
-  for (const key of FORWARDED) {
-    const value = url.searchParams.get(key);
-    if (value !== null) out.set(key, value);
-  }
-  return new Response(null, {
-    status: 302,
-    headers: { location: `http://127.0.0.1:${port}/callback?${out}`, "cache-control": "no-store", "referrer-policy": "no-referrer" },
-  });
+  if (url.pathname === "/") return page(200, HOME);
+  if (url.pathname === "/privacy") return page(200, PRIVACY);
+  return new Response("Not found.", { status: 404 });
 }
 
-async function exchange(request: Request, env: Env, url: URL, fields: string[], grantType: string): Promise<Response> {
-  if (request.method !== "POST") return text(405, "Method not allowed.");
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
-    return json(500, { error: "server_misconfigured", error_description: "The backend has no Google client configured." });
+async function authorize(request: Request, env: Env, url: URL): Promise<Response> {
+  const auth = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+  // Only local apps such as Claude Code may sign in: a client registered with a web redirect
+  // could otherwise send someone's Drive grant to its own server.
+  const redirectUri = new URL(auth.redirectUri);
+  if (redirectUri.protocol !== "http:" || !LOOPBACK.has(redirectUri.hostname)) {
+    return page(400, "<p>This server only signs in local apps such as Claude Code.</p>");
   }
-  if (env.RATE_LIMITER) {
-    const key = request.headers.get("cf-connecting-ip") ?? "unknown";
-    if (!(await env.RATE_LIMITER.limit({ key })).success) {
-      return json(429, { error: "rate_limited", error_description: "Too many sign-in requests; wait a minute." });
-    }
+  const { verifier, challenge } = await pkce();
+  const { state, headers } = await env.OAUTH_PROVIDER.beginUpstream(auth, { data: { verifier } });
+  headers.set("location", consentUrl(env, `${url.origin}/callback`, state, challenge));
+  return new Response(null, { status: 302, headers });
+}
+
+async function callback(request: Request, env: Env, url: URL): Promise<Response> {
+  // Checks `state` against this browser's binding cookie; works once.
+  const { request: auth, data, headers } = await env.OAUTH_PROVIDER.finishUpstream<{ verifier: string }>(request);
+  const deny = (description: string) => {
+    headers.set("location", authorizationErrorRedirect(auth, "access_denied", description));
+    return new Response(null, { status: 302, headers });
+  };
+  const code = url.searchParams.get("code");
+  if (!code) return deny(`Google sign-in was not completed (${url.searchParams.get("error") ?? "no code"}).`);
+  const tokens = await exchangeCode(env, code, `${url.origin}/callback`, data.verifier);
+  if (!tokens.scope?.split(" ").includes(DRIVE_SCOPE)) {
+    return deny("Google Drive read access was not granted. Sign in again and tick the Drive checkbox.");
   }
-  let body: Record<string, unknown>;
-  try {
-    body = (await request.json()) as Record<string, unknown>;
-  } catch {
-    return json(400, { error: "invalid_request", error_description: "Body must be JSON." });
-  }
-  const form = new URLSearchParams({ grant_type: grantType });
-  for (const field of fields) {
-    const value = body?.[field];
-    if (typeof value !== "string" || !value || value.length > MAX_FIELD) {
-      return json(400, { error: "invalid_request", error_description: `Missing or invalid ${field}.` });
-    }
-    form.set(field, value);
-  }
-  form.set("client_id", env.GOOGLE_CLIENT_ID);
-  form.set("client_secret", env.GOOGLE_CLIENT_SECRET);
-  if (grantType === "authorization_code") form.set("redirect_uri", `${url.origin}/callback`);
-  const google = await fetch(env.GOOGLE_TOKEN_URL || GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: form.toString(),
+  if (!tokens.refresh_token) return deny("Google did not return a refresh token. Sign in again.");
+  const account = await userEmail(tokens.access_token);
+  const props: Props = { email: account.email, googleAccessToken: tokens.access_token, googleRefreshToken: tokens.refresh_token };
+  const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
+    request: auth,
+    userId: account.sub,
+    metadata: { label: account.email },
+    scope: auth.scope,
+    props: { ...props, googleExpiresIn: tokens.expires_in },
   });
-  const reply = (await google.json().catch(() => ({}))) as Record<string, unknown>;
-  const picked = Object.fromEntries(RETURNED.filter((k) => k in reply).map((k) => [k, reply[k]]));
-  if (!google.ok && !("error" in picked)) {
-    picked.error = "google_error";
-    picked.error_description = `Google answered HTTP ${google.status} without details.`;
+  headers.set("location", redirectTo);
+  return new Response(null, { status: 302, headers });
+}
+
+/** Keep the Google access token in step with Claude Code's: renew it on each refresh. */
+export async function renewGoogle(options: TokenExchangeCallbackOptions<Env>) {
+  const props = options.props as Props & { googleExpiresIn?: number };
+  if (options.grantType === "authorization_code") {
+    const { googleExpiresIn, ...rest } = props;
+    return { newProps: rest, accessTokenTTL: Math.max(60, (googleExpiresIn ?? 3600) - EARLY) };
   }
-  return json(google.status, picked);
+  if (options.grantType !== "refresh_token") return;
+  try {
+    const t = await refresh(options.env, props.googleRefreshToken);
+    const newProps: Props = { ...props, googleAccessToken: t.access_token, googleRefreshToken: t.refresh_token ?? props.googleRefreshToken };
+    return { newProps, accessTokenTTL: Math.max(60, t.expires_in - EARLY) };
+  } catch (e) {
+    if (e instanceof GoogleTokenError && e.invalid) {
+      throw new OAuthError("invalid_grant", { description: "Google revoked the sign-in; sign in again from /mcp." });
+    }
+    throw new OAuthError("temporarily_unavailable", { description: "Could not reach Google to renew the sign-in.", statusCode: 503 });
+  }
 }
 
 // Google's consent screen needs a homepage and a privacy policy on the app's domain.
 const REPO = "https://github.com/q33566/my_plugins";
 const HOME = `<h1>Kurt Folder Reader</h1>
-<p>The sign-in backend of a Claude Code plugin that reads one Google Drive folder (read-only).
-It forwards Google's sign-in result to the plugin on your computer and adds the app's OAuth
-client secret to token requests. Source and install steps: <a href="${REPO}">${REPO}</a>.</p>
+<p>A remote MCP server for Claude Code that reads Google Drive folders (read-only), after you sign in
+with Google. Source and install steps: <a href="${REPO}">${REPO}</a>.</p>
 <p><a href="/privacy">Privacy policy</a></p>`;
 const PRIVACY = `<h1>Privacy policy — Kurt Folder Reader</h1>
-<p><b>What the app accesses.</b> With your consent, the plugin requests the Google scope
-<code>https://www.googleapis.com/auth/drive.readonly</code> and uses it only to list and read files
-inside the one Drive folder configured in the plugin, when you ask Claude to. It never writes,
-deletes or shares anything.</p>
-<p><b>Where your data goes.</b> File contents go from Google Drive straight to the plugin on your
-computer and from there to your Claude Code session. Your Google tokens are stored only on your
-computer, in the plugin's data directory.</p>
-<p><b>This backend</b> stores no tokens, files or personal data, and keeps no logs of them. It only
-relays the sign-in redirect to your computer and passes token requests to Google with the app's
-client secret added.</p>
-<p><b>Removing access.</b> Uninstall the plugin (this deletes its stored tokens) and remove the app at
-<a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</p>
+<p><b>What the app accesses.</b> With your consent, it requests the Google scope
+<code>https://www.googleapis.com/auth/drive.readonly</code> (plus your email address, to show which
+account is signed in) and uses it only to list and read files inside the Drive folder you ask Claude
+about. It never writes, deletes or shares anything.</p>
+<p><b>Where your data goes.</b> When you ask, the server fetches a file from Google Drive and returns
+it to your Claude Code session in the same request. It does not store file contents or log them.</p>
+<p><b>Your Google tokens</b> are kept by this server, encrypted with a key that only the token held by
+your Claude Code can unlock, so the server cannot read them unless your Claude Code calls it. They
+are used only to call Google Drive for you and to renew the sign-in.</p>
+<p><b>Removing access.</b> In Claude Code, run <code>/mcp</code> and clear the sign-in for gdrive-reader,
+and remove the app at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>;
+the stored grant then stops working.</p>
 <p><b>Contact.</b> Open an issue at <a href="${REPO}/issues">${REPO}/issues</a>.</p>`;
 
-function page(body: string): Response {
+function page(status: number, body: string): Response {
   return new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">` +
     `<title>Kurt Folder Reader</title><body style="font-family:system-ui;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.5">${body}`, {
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
-}
-
-function json(status: number, body: unknown): Response {
-  return Response.json(body, { status, headers: { "cache-control": "no-store" } });
-}
-
-function text(status: number, body: string): Response {
-  return new Response(body, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
-}
-
-function html(status: number, message: string): Response {
-  return new Response(`<!doctype html><meta charset="utf-8"><title>Google Drive Reader</title><p>${message}</p>`, {
     status, headers: { "content-type": "text/html; charset=utf-8" },
   });
+}
+
+function redirect(location: string): Response {
+  return new Response(null, { status: 302, headers: { location } });
+}
+
+function escape(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }

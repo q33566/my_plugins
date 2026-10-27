@@ -1,15 +1,8 @@
 {
   "mcpServers": {
     "gdrive-reader": {
-      "command": "uv",
-      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "--frozen", "--no-dev", "--quiet", "server.py"],
-      "env": {
-        "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv",
-        "GDRIVE_FOLDER": "${user_config.folder_url}",
-        "GDRIVE_BROKER_URL": "${user_config.broker_url}",
-        "GDRIVE_CLIENT_ID": "${user_config.client_id}",
-        "GDRIVE_CALLBACK_PORT": "${user_config.callback_port}"
-      }
+      "type": "http",
+      "url": "https://gdrive-reader-broker.gdrive-reader-broker.workers.dev/mcp"
     }
   }
 }
