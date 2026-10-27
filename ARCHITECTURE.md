@@ -32,16 +32,25 @@ Claude Code ──stdio──▶ MCP server (Python, runs on the user's machine,
 
 ## Choices and why
 
-- **Local server, tokens on the user's machine.** The Google tokens never pass
-  through or rest on a server we run. The cost is one prerequisite (uv) on the
-  user's machine.
+- **Local server, tokens stored on the user's machine.** The Google tokens are
+  stored only in `token.json` on the user's machine. The Worker relays them once
+  when they are issued or refreshed and writes nothing; file contents never pass
+  through it. The cost is one prerequisite (uv) on the user's machine.
+- **Why the redirect goes through the Worker.** A Web-application OAuth client
+  only accepts redirect URIs registered in advance, while the local listener's
+  port is random. Google therefore redirects to the Worker's fixed `/callback`,
+  which sends the browser on to `127.0.0.1:<port>` (taken from `state`; only
+  ports 1024–65535, only to 127.0.0.1).
 - **A backend only for the client secret.** Google's token endpoint requires
   the client secret even with PKCE. Shipping it inside the plugin would put it
   in a public repository; instead a stateless Worker adds it. The PKCE verifier
   never leaves the user's machine before the exchange, so a code seen in
-  transit is useless alone. The Worker cannot stop someone who already holds a
-  code and its verifier from using it: the secret can be rotated and the
-  endpoints are rate-limited, but this is not secrecy against the user.
+  transit (the browser's address bar and history) is useless alone. This
+  protects the redirect path, not against the Worker itself, which the author
+  operates from the code in this repository. The Worker cannot stop someone who
+  already holds a code and its verifier from using it: the secret can be
+  rotated and the endpoints are rate-limited, but this is not secrecy against
+  the user.
 - **Authorization code + PKCE + `state`, loopback redirect.** Google's device
   flow does not allow Drive read scopes; out-of-band copy/paste is retired.
 - **Scope `drive.readonly`.** It is the narrowest scope that can list a folder
