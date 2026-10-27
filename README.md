@@ -38,8 +38,9 @@ backend, so there is nothing to configure.
 2. The first time, Claude Code asks whether to open a Google sign-in link. Accept.
    (If you see the link as text instead, open it yourself.)
 3. In the browser, pick your Google account. Google shows **"Google hasn't
-   verified this app"**: click **Advanced**, then **Go to Google Drive Reader
-   (unsafe)**, then allow **"See and download all your Google Drive files"**
+   verified this app"**: click **Advanced**, then **Go to Kurt Folder Reader
+   (unsafe)** (the name of the author's OAuth app), then allow **"See and
+   download all your Google Drive files"**
    (the plugin only ever reads, and only inside the configured folder).
 4. The browser says "Signed in"; Claude lists the folder. (If the link came as
    text in step 2, ask again after signing in.)
@@ -77,23 +78,28 @@ Everything the plugin uses can be replaced with your own:
 
 1. **Google Cloud project**: <https://console.cloud.google.com/> → create a project →
    *APIs & Services* → enable **Google Drive API**.
-2. **OAuth consent screen** (*Google Auth Platform*): user type **External**; add
-   the scope `https://www.googleapis.com/auth/drive.readonly`; publishing status
-   **In production** (or keep *Testing* and add your account as a test user —
-   test-user sign-ins expire after 7 days).
-3. **OAuth client**: *Clients* → *Create client* → type **Web application**.
-   Copy the client ID and secret. The authorized redirect URI is your Worker's
-   URL plus `/callback`, i.e. `https://gdrive-reader-broker.<your-subdomain>.workers.dev/callback`
-   (`wrangler deploy` in step 4 prints the exact URL; come back and add it then).
-4. **Backend** (Cloudflare Workers, free plan is enough):
+2. **OAuth client**: *Google Auth Platform* → *Clients* → *Create client* → type
+   **Web application**. Copy the client ID and secret (add the redirect URI in
+   step 4).
+3. **Backend** (Cloudflare Workers, free plan is enough): set `GOOGLE_CLIENT_ID`
+   in `backend/wrangler.toml`, then
    ```
    cd backend
    npm install
    npx wrangler login
-   # set GOOGLE_CLIENT_ID in wrangler.toml, then:
+   npx wrangler deploy          # prints https://gdrive-reader-broker.<your-subdomain>.workers.dev
    npx wrangler secret put GOOGLE_CLIENT_SECRET
-   npx wrangler deploy
    ```
+4. **Back in Google Auth Platform** (`<worker>` is the URL from step 3):
+   - *Clients* → your client → authorized redirect URI `<worker>/callback`.
+   - *Branding*: an app name without "Google" or other Google product names such
+     as "Drive" (saving fails otherwise), support email, homepage `<worker>/`,
+     privacy policy `<worker>/privacy` (the Worker serves both), authorized
+     domain `<your-subdomain>.workers.dev`.
+   - *Data Access*: add the scope `https://www.googleapis.com/auth/drive.readonly`.
+   - *Audience*: user type **External**, then **Publish app** (In production).
+     Or keep *Testing* and add your account as a test user — test-user sign-ins
+     expire after 7 days.
 5. **Plugin**: `/plugin` → gdrive-reader → configure: set `broker_url` to your
    Worker URL and `client_id` to your client ID (and `folder_url` to any folder),
    then restart Claude Code so the server starts with the new settings.

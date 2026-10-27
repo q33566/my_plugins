@@ -95,4 +95,19 @@ describe("other routes", () => {
   it("returns 404 for unknown paths", async () => {
     expect((await call("/nope")).status).toBe(404);
   });
+
+  it("serves a homepage and a privacy policy for Google's consent screen", async () => {
+    const home = await call("/");
+    expect(home.status).toBe(200);
+    expect(home.headers.get("content-type")).toContain("text/html");
+    const homeText = await home.text();
+    expect(homeText).toContain("Kurt Folder Reader");
+    expect(homeText).toContain('href="/privacy"');
+    const privacy = await call("/privacy");
+    expect(privacy.status).toBe(200);
+    const policy = await privacy.text();
+    expect(policy).toContain("drive.readonly");
+    expect(policy).toContain("stores no");
+    expect(policy).toContain("myaccount.google.com/permissions");
+  });
 });
