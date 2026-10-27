@@ -5,7 +5,7 @@ from pathlib import Path
 
 # The author's deployment; a self-hosted setup overrides both through userConfig.
 DEFAULT_BROKER_URL = "https://gdrive-reader-broker.REPLACE-ME.workers.dev"
-DEFAULT_CLIENT_ID = "REPLACE-ME.apps.googleusercontent.com"
+DEFAULT_CLIENT_ID = "90797836930-srr3msslmq7c3ataf1ge29lt5nnec8ro.apps.googleusercontent.com"
 DEFAULT_FOLDER = "https://drive.google.com/drive/folders/1AU6ZW-3NFxme6388YPe98bGWWh9q_E5Y"
 
 

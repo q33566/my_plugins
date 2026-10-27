@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 
 [vars]
-GOOGLE_CLIENT_ID = "REPLACE-ME.apps.googleusercontent.com"
+GOOGLE_CLIENT_ID = "90797836930-srr3msslmq7c3ataf1ge29lt5nnec8ro.apps.googleusercontent.com"
 # GOOGLE_CLIENT_SECRET is a secret: `npx wrangler secret put GOOGLE_CLIENT_SECRET`
 
 # 20 sign-in requests per minute per IP on /token and /refresh.
