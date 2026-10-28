@@ -1,9 +1,9 @@
 # Google Drive Reader：Claude Code plugin
 
 在 Claude Code 裡詢問 Google Drive 資料夾裡的檔案。這個 plugin 把 Claude Code 接到作者架在
-Cloudflare Workers 上的遠端 MCP 伺服器（MCP 是讓 Claude Code 這類 AI 應用程式呼叫外部工具的開放協定）。你用
-Google 帳號登入後，伺服器取得讀取你整個 Drive 的唯讀權限，以及你的帳號 ID 與 email（用來辨識
-帳號）。登入怎麼運作，見「登入時發生什麼」一節。
+Cloudflare Workers 上的遠端 MCP 伺服器（MCP 是讓 Claude Code 這類 AI 應用程式呼叫外部
+工具的開放協定）。你用 Google 帳號登入後，伺服器取得讀取你整個 Drive 的唯讀權限，以及你的帳號
+ID 與 email（用來辨識帳號）。
 
 它能列出指定資料夾、其子資料夾，以及其中捷徑指向的檔案與資料夾（連同那些資料夾的子資料夾，
 可能在指定資料夾之外；上限見「使用」一節），並讀取這些檔案：
@@ -21,7 +21,7 @@ Google 帳號登入後，伺服器取得讀取你整個 Drive 的唯讀權限，
 要讀的資料夾。在 Claude Code 裡執行：
 
 ```
-/plugin marketplace add q33566/my_plugins
+/plugin marketplace add https://github.com/q33566/my_plugins
 /plugin install gdrive-reader@gdrive-reader-marketplace
 ```
 
@@ -39,84 +39,19 @@ Google 帳號登入後，伺服器取得讀取你整個 Drive 的唯讀權限，
 
 登入完成 30 天後必須重新登入，步驟同上。
 
-## 登入時發生什麼（OAuth 流程）
+## 登入後的兩組 token
 
-Claude Code 要透過伺服器讀你的 Drive，但不該拿到你的 Google 密碼。OAuth 是解決這件事的標準
-協定：你同意授權後，發 token 的一方（**授權方**）就發 **token** 給你同意的那支程式。
-token 是一串別人猜不到的字串，有權限範圍、會過期、可撤銷；程式之後每次存取資料都帶著它。
+登入其實是兩段 OAuth（讓你授權程式存取資料、又不必交出密碼的標準協定），會產生兩組 token
+（有權限範圍、會過期的存取憑證）：
 
-這裡有兩支程式要拿 token：伺服器和 Claude Code。所以登入其實是兩段 OAuth：
+- **Google token**：Google 發給伺服器，伺服器用它讀你的 Drive；只存在伺服器，Claude Code
+  拿不到。
+- **Claude Code token**：伺服器發給 Claude Code，Claude Code 每次呼叫伺服器都帶著它。
 
-- **伺服器向 Google 拿 token**（下稱 Google token）。授權方是 Google，你在 Google 的同意畫面
-  同意。伺服器用這組 token 讀你的 Drive；它只存在伺服器，Claude Code 拿不到。
-- **Claude Code 向伺服器拿 token**（下稱 Claude Code token）。授權方是伺服器，你按
-  **Authenticate** 就是同意。
+每組都有一張 **access token**（用來存取，約一小時過期）和一張 **refresh token**（只用來換新的
+access token）。Claude Code 會自動換新，你不必每小時重新登入；但換新不會延長 30 天的登入期限。
 
-每一段都會拿到兩種 token：**access token** 用來存取，約一小時過期；**refresh token** 只
-用來換新的 access token，效期長得多。Claude Code 每次用 refresh token 換
-access token 時，伺服器也會發一張新的 refresh token 取代舊的；Google 那段則是 Google 沒給新的
-refresh token，就沿用舊的。Claude Code 每次呼叫伺服器時帶的是 access token。
-
-### 為什麼要經過瀏覽器
-
-這裡授權的結果靠瀏覽器轉址送到拿 token 的程式：
-
-- 伺服器和 Google 那一段，你是在瀏覽器裡的 Google 頁面同意的，Google 把瀏覽器轉回伺服器的網址，
-  把結果交給伺服器。
-- Claude Code 和伺服器那一段，Claude Code 只在你電腦的 localhost 上等結果，伺服器從網路上連
-  不到；只有同樣在你電腦上的瀏覽器連得到，所以伺服器把瀏覽器轉到那個 localhost 網址。
-
-但靠轉址送的東西都寫在網址上，會留在瀏覽紀錄和收到請求的伺服器日誌裡。所以
-每一段 OAuth 都分兩個動作：
-
-1. 瀏覽器只轉交一個**授權碼**：只能用一次、幾分鐘就過期，本身讀不了資料。
-2. 收到授權碼的程式，再自己直接連到授權方，用授權碼換 token。token 不出現在任何網址上。
-
-### 實際步驟
-
-登入前，Claude Code 會先向伺服器**註冊**：登記自己在你電腦上的接收網址（本機位址，例如
-`http://localhost:<port>/callback`，port 每次可以不同），取得一個**用戶端 ID**（伺服器用來認出這個 Claude Code 的編號）。任何程式
-都能這樣註冊，不需要作者核准。之後的登入網址會帶著用戶端 ID，伺服器在第 ⑤ 步就照這個用戶端
-登記的接收網址轉送。
-
-下表會用到兩個詞，用途在下一節「保護措施」說明：**隨機值**是每次登入當場產生、別人猜不到的
-字串；**雜湊值**是對隨機值做單向運算的結果，從雜湊值推不回原值。
-
-按下 **Authenticate** 之後，依序發生下面六步。「經瀏覽器」是靠轉址把東西送過去，「直接連線」
-是程式自己連過去，不經過瀏覽器。**client secret** 是伺服器在 Google 登記時拿到、只有伺服器和
-Google 知道的密碼。第 ②③④ 步是伺服器和 Google 那一段，第 ①⑤⑥ 步是 Claude Code
-和伺服器那一段。
-
-| 步驟 | 方式 | 發生什麼 |
-|---|---|---|
-| ① | 經瀏覽器 | Claude Code 開始在註冊時登記的接收網址等候（只有本機連得到），產生隨機值 A，然後開瀏覽器到伺服器的登入網址，網址上帶著用戶端 ID 和 A 的雜湊值。 |
-| ② | 經瀏覽器 | 伺服器產生隨機值 B，以及這次登入專用的另一個隨機值 state，在瀏覽器留一個存著 state 雜湊值的 cookie。接著把瀏覽器轉到 Google 的同意畫面，網址上帶著 B 的雜湊值和 state。 |
-| ③ | 經瀏覽器 | 你按 **Continue**，Google 把瀏覽器轉回伺服器，網址上帶著授權碼和原本的 state。 |
-| ④ | 直接連線 | 伺服器把授權碼、B 的原值和伺服器的 client secret 交給 Google，換到 Google token，加密存放。 |
-| ⑤ | 經瀏覽器 | 伺服器發一個自己的授權碼（綁著發起這次登入的用戶端 ID 和 A 的雜湊值），把瀏覽器轉到這個用戶端登記的接收網址，Claude Code 在那裡收到它。 |
-| ⑥ | 直接連線 | Claude Code 把授權碼、自己的用戶端 ID 和 A 的原值交給伺服器；三者都對得上，才換到 Claude Code token。 |
-
-### 保護措施
-
-- **偷到授權碼也換不到 token（PKCE）。** 隨機值 A、B 在網址上只出現雜湊值；原值只出現在
-  第 ④⑥ 步的直接連線裡。授權方收到原值時算一次雜湊，和先前收到的對得上才發 token。所以在網址
-  上看到授權碼的人，拿不到原值，也就換不到 token。第 ④ 步伺服器還要附上 client secret。
-- **第 ③ 步只能在第 ② 步出發的那個瀏覽器完成。** 網址上的 state 要和瀏覽器裡的 cookie 對得上，
-  伺服器才繼續；state 只能用一次，10 分鐘後失效。這是 OAuth 防「登入 CSRF」的標準做法。CSRF
-  是跨站請求偽造：別的網站誘使你的瀏覽器送出你沒打算送的請求。用在登入上，就是誘使你的瀏覽器
-  替別人完成一次登入。
-- **第 ⑤ 步只會送到你電腦上的 localhost。** 註冊時登記的接收網址不是本機位址的用戶端，伺服器
-  收到第 ① 步的登入請求時就拒絕。否則別人可以註冊一個接收網址指向自己伺服器的用戶端，騙你點它的
-  登入連結，拿走讀你 Drive 的權限。這擋不住已經在你電腦上執行的惡意程式（見
-  ARCHITECTURE.md）。
-
-### 自動換新
-
-伺服器只在 Claude Code 用 refresh token 換新時，才同時用 Google 的 refresh token 換一張新的
-Google access token。所以伺服器讓 Claude Code 的 access token 比 Google 的早 5 分鐘過期：
-只要 Claude Code 的 access token 還有效，伺服器手上的 Google access token 也一定有效。Claude
-Code 下次呼叫伺服器時若發現自己的已過期，會先換新，所以你不必每小時重新登入。換新不會
-延長 30 天的登入期限。
+登入的每一步、流程圖與保護措施，見 [docs/oauth-flow.md](docs/oauth-flow.md)。
 
 ## 使用
 
@@ -145,7 +80,8 @@ Code 下次呼叫伺服器時若發現自己的已過期，會先換新，所以
   讀過的檔案內容留在 `~/.claude/projects/` 底下。
 - **伺服器**：在 Cloudflare Workers KV（Cloudflare 的鍵值儲存）存一筆你的授權資料。
   - 授權資料裡有 Google 的 access token 和 refresh token，都是加密的；解密金鑰只能用 Claude
-    Code token 解開，而伺服器只存 Claude Code token 的雜湊值。所以即使有人拿到 KV 裡的全部
+    Code token 解開（登入途中，Claude Code 換到 token 之前的幾分鐘內，改用伺服器發給 Claude Code 的授權碼保護），
+    而伺服器只存 Claude Code token 與授權碼的雜湊值。所以即使有人拿到 KV 裡的全部
     資料，也解不開 Google token。
   - 伺服器處理每次呼叫時，用 Claude Code token 解密，因此看得到 Google token 和檔案內容。
     所以你必須信任作者，就像使用其他由廠商代管的雲端服務一樣。
@@ -153,8 +89,8 @@ Code 下次呼叫伺服器時若發現自己的已過期，會先換新，所以
     以及其中捷徑指向的檔案與資料夾（連同那些資料夾的子資料夾），捷徑可以指向資料夾外；沒指定
     資料夾時讀範例資料夾。這只是程式的做法，不是安全邊界：檔案裡的文字也可能讓 Claude 改指定別的
     資料夾。
-  - 授權資料以你的 Google 帳號 ID 當鍵、email 當標籤，兩者都是明文。Claude Code token 的開頭
-    也帶著你的 Google 帳號 ID。
+  - 授權資料以你的 Google 帳號 ID 當鍵、email 當標籤，兩者都是明文。Claude Code token 和登入時
+    經瀏覽器網址傳給 Claude Code 的授權碼，開頭也都帶著你的 Google 帳號 ID。
   - 檔案內容只在處理呼叫時經過伺服器，不儲存也不記錄。
 - **登出**：`/mcp` → gdrive-reader → **Clear authentication**，再到
   <https://myaccount.google.com/permissions> 移除 Kurt-Folder-Reader。移除後，授權資料裡的

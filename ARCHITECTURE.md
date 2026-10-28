@@ -52,8 +52,9 @@ account.
    token came back, and calls `completeAuthorization()` with the Google tokens as
    the grant's props. The browser goes back to Claude Code's localhost callback.
 5. Claude Code exchanges its code at `/token`. The access token the Worker
-   issues expires five minutes before Google's, so Claude Code refreshes before
-   the Google token runs out; when Claude Code refreshes, `tokenExchangeCallback`
+   issues expires five minutes before Google's, so Claude Code normally refreshes
+   before the Google token runs out (not if steps 4 to 6 of the first sign-in
+   take more than five minutes); when Claude Code refreshes, `tokenExchangeCallback`
    renews the Google access token and stores it in the grant. If Google has
    revoked the sign-in, the refresh fails with `invalid_grant` and Claude Code
    asks the user to authenticate again.
@@ -134,11 +135,14 @@ account.
   and every refresh token the provider issues for it, expires then (the
   provider's default lifetime; refreshes do not extend it). After that the user
   signs in again.
-- Without the client-approval page, one attack remains. An attacker who already
-  runs a program on the user's machine can have it listen on a loopback port,
-  register a client with that port as the redirect, and get the user to open a
-  sign-in link for that client. The program then receives the code and can
-  exchange it for Worker tokens that read the user's Drive.
+- Without the client-approval page, one attack remains. An attacker can
+  register a client with a loopback redirect and get the user to open its
+  sign-in link; the state cookie is then set in the user's own browser, so
+  that check passes, and the code lands on the user's machine. The attacker
+  gets it, and with their PKCE verifier exchanges it for Worker tokens that read
+  the user's Drive, if a program of theirs already listens on that loopback
+  port, or if the user is tricked into sending them the final localhost URL
+  from the address bar.
 - Sign-in and every tool call need the Worker to be up.
 - A Google Workspace admin can block unverified apps or restricted scopes.
 - The unverified app is limited to 100 new users over its lifetime.
