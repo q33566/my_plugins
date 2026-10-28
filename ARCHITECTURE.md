@@ -17,13 +17,15 @@ Claude Code ──HTTPS (MCP, streamable HTTP)──▶ Cloudflare Worker  /mcp
                                                 └──HTTPS──▶ Google Drive API v3 (read-only scope)
 ```
 
-The plugin is one `.mcp.json` entry: `{"type": "http", "url": "<worker>/mcp"}`.
+The plugin is one `.mcp.json` entry: `{"type": "http", "url": "<worker>/mcp"}`,
+where `<worker>` is the Worker's URL.
 
 Terms used below: the Worker is the OAuth server for Claude Code, built with the
 `@cloudflare/workers-oauth-provider` library ("the provider"). Each completed
 sign-in is a **grant**, a record in Workers KV (Cloudflare's key-value store).
 A grant carries **props**, data the Worker attaches to it; here the props are the
-user's Google tokens and email. `beginUpstream()`, `finishUpstream()`,
+user's Google tokens and email (the email is also kept unencrypted as the
+grant's label, see below). `beginUpstream()`, `finishUpstream()`,
 `completeAuthorization()` and `tokenExchangeCallback` are the provider's API;
 "upstream" means Google. The tools: `drive_list_folder` lists a folder tree,
 `drive_read_file` reads one file, `drive_auth_status` shows the signed-in
@@ -50,8 +52,9 @@ account.
    secret and verifier, checks that the Drive scope was granted and a refresh
    token came back, and calls `completeAuthorization()` with the Google tokens as
    the grant's props. The browser goes back to Claude Code's localhost callback.
-5. Claude Code exchanges its code at `/token`. Its access token expires five
-   minutes before Google's; when Claude Code refreshes, `tokenExchangeCallback`
+5. Claude Code exchanges its code at `/token`. The access token the Worker
+   issues expires five minutes before Google's, so Claude Code refreshes before
+   the Google token runs out; when Claude Code refreshes, `tokenExchangeCallback`
    renews the Google access token and stores it in the grant. If Google has
    revoked the sign-in, the refresh fails with `invalid_grant` and Claude Code
    asks the user to authenticate again.
@@ -62,7 +65,8 @@ account.
   claude.ai connectors) work in Claude Code: nothing to install, sign-in from
   `/mcp`, tokens kept and refreshed by Claude Code. The first version ran a local
   Python server and kept Google tokens on the user's machine; it needed uv (a
-  Python tool installer) and started the sign-in at the first tool call.
+  Python tool installer), and the server itself started the sign-in at the first
+  tool call.
 - **Google tokens on the server, encrypted per grant.** The tokens the provider
   issues to Claude Code are stored only as hashes. The Google tokens sit in the
   grant's props, encrypted with a key that is itself wrapped by the tokens Claude
@@ -71,12 +75,23 @@ account.
   plain-text label; only the props are encrypted. While serving a
   request the Worker does decrypt them, and it sees the file contents it returns;
   it stores the Google tokens only in that encrypted form, does not store file
-  contents, and logs neither. That is the trust users give any
-  hosted connector, here the author.
-- **Only loopback redirects.** Dynamic registration lets anyone register a
-  client. Refusing non-loopback redirects means a sign-in link sent by someone
-  else cannot deliver the user's grant to that person's server, so no extra
-  approval page is needed.
+  contents, and logs neither. Users therefore have to trust the
+  operator, as with any hosted connector; here the operator is the author.
+- **Only loopback redirects, no client-approval page.** Dynamic registration
+  (`/register`) lets anyone register a client with a redirect of their
+  choosing. An attacker could register a client whose redirect is the
+  attacker's own server and send the user a sign-in link (an `/authorize` URL)
+  for that client. Google's consent screen names only the Worker's app,
+  Kurt-Folder-Reader, so nothing there shows who registered the client. The
+  authorization code that the Worker issues would then go to the attacker's
+  server, which could exchange it at `/token` for Worker tokens and read the
+  user's Drive through the tools. The MCP Security Best Practices require a
+  client-approval page for servers like this one, which use one OAuth client at
+  Google for all users: before sending the user to Google, the server asks the
+  user to approve the registered client. Instead, `/authorize` continues only
+  when the client's redirect is an `http://` loopback address (`localhost`,
+  `127.0.0.1` or `[::1]`), so the code goes to a program on the user's own
+  machine (see "Limits and residual risks").
 - **Stateless MCP handler** (`createMcpHandler`): a fresh server per request, no
   Durable Objects. The tools need no server-to-client messages.
 - **Scope `drive.readonly`.** The narrowest scope that can list a folder someone
@@ -91,29 +106,40 @@ account.
   folder is a tool argument rather than a plugin setting because it can change
   from one request to the next.
 - **File reads limited to the named folder (not a security boundary).**
-  `drive.readonly` reaches the whole Drive, so `drive_read_file` serves a file
-  only if walking the named folder finds it (shortcut targets count as inside).
-  This only blocks a read that gives a file id without a folder that contains
-  it. Text inside a file that asks Claude to read something else can also name a
-  folder, including the whole My Drive (`root`), and a shortcut in a shared
-  folder can point anywhere; any folder the account can open is readable by
-  design.
+  `drive.readonly` reaches the whole Drive. To keep each read to the folder the
+  request is about, `drive_read_file` serves a file only if walking the named
+  folder (or the default folder) finds it; shortcut targets count as inside. A
+  file id alone, for example one Claude remembered from another folder, is
+  therefore not enough. This does not stop reads elsewhere: the user can name any folder, and text
+  inside a file that asks Claude to read something else can name a folder too,
+  including the whole My Drive (`root`), and a shortcut in a shared folder can
+  point anywhere; any folder the account can open is readable by design.
 - **PDFs as files, not parsed on the server.** Text extraction would exceed the
   free plan's 10 ms CPU per request. The PDF is returned as an embedded resource;
-  Claude Code saves it and Claude reads it with Read, which also shows the pages
+  Claude Code saves it and Claude reads it with its `Read` tool, which also shows the pages
   as images (scanned PDFs work the same way). Images return as MCP image blocks;
   Google Docs/Sheets/Slides are exported as text by Drive.
 
 ## Limits and residual risks
 
 - Free plan: 10 ms CPU and 50 subrequests per request. Base64-encoding the test
-  files (300 KB image, 600 KB PDF) fits; files of many MB, or folders with dozens
+  files (300 KB image, 600 KB PDF) fits; files of several MB, or folders with dozens
   of subfolders, may need the paid plan ($5/month: 30 s CPU, 10,000 subrequests).
   Every file read walks the whole folder again, so a large folder makes reads
   fail too, not only listings. A listing also stops at 2,000 entries or 20
   levels; a file past that cut is reported as outside the folder.
   Downloads are capped at 10 MB (5 MB for images) to stay under Claude Code's
-  16 MiB response limit.
+  16 MiB response limit; a larger file is not read, and Claude is told its size
+  and the limit.
+- Claude Code stays signed in for 30 days from the end of sign-in: the grant,
+  and every refresh token the provider issues for it, expires then (the
+  provider's default lifetime; refreshes do not extend it). After that the user
+  signs in again.
+- Without the client-approval page, one attack remains. An attacker who already
+  runs a program on the user's machine can have it listen on a loopback port,
+  register a client with that port as the redirect, and get the user to open a
+  sign-in link for that client. The program then receives the code and can
+  exchange it for Worker tokens that read the user's Drive.
 - Sign-in and every tool call need the Worker to be up.
 - A Google Workspace admin can block unverified apps or restricted scopes.
 - The unverified app is limited to 100 new users over its lifetime.
@@ -125,8 +151,9 @@ account.
 ## Rejected alternatives
 
 - **Local MCP server with tokens on the user's machine** (v0.1.0): keeps Google
-  tokens off any server, but needs uv and a sign-in at the first tool call
-  instead of Claude Code's standard `/mcp` flow.
+  tokens off any server, but needs uv, and the server starts the sign-in
+  itself at the first tool call instead of using Claude Code's standard `/mcp`
+  flow.
 - **Google Cloud Run instead of Workers**: no 10 ms CPU limit per request, but
   the OAuth server with encrypted grant props, which Workers gets from one
   library, would have to be assembled from other parts; it also needs a billing

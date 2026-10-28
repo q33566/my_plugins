@@ -4,8 +4,8 @@ Ask Claude Code about the files in a Google Drive folder. This plugin is the
 author's solution to a take-home assignment from OakMega. The plugin connects
 Claude Code to a remote MCP server that the author runs on Cloudflare Workers.
 (MCP, the Model Context Protocol, is how Claude Code calls outside tools.) The
-server signs you in with Google OAuth and asks only for read-only Drive access.
-It lists the files in the folder you name and in its subfolders, and reads
+server signs you in with Google OAuth and asks only for read-only Drive access
+(plus your email, to identify your account). It lists the files in the folder you name and in its subfolders, and reads
 files: Google Docs, Sheets and Slides and text files come back as text, images
 as images, and PDFs as files that Claude reads page by page, including scanned
 PDFs. For other file types, Claude is told the file cannot be read.
@@ -28,7 +28,7 @@ install the plugin, named `gdrive-reader`, from it:
 
 If Claude Code asks you to, run `/reload-plugins` (or restart Claude Code).
 
-## Sign in (once)
+## Sign in
 
 1. Run `/mcp`, select gdrive-reader (it shows **needs authentication**) and
    choose **Authenticate**. Claude Code opens your browser.
@@ -37,39 +37,53 @@ If Claude Code asks you to, run `/reload-plugins` (or restart Claude Code).
    Google's verification (see [ARCHITECTURE.md](ARCHITECTURE.md)). Click
    **Advanced**, then **Go to Kurt-Folder-Reader (unsafe)**.
 3. Tick the checkbox **"See and download all your Google Drive files"**, then
-   allow access. Google grants read access to your whole Drive; the server itself
-   reads only files inside the requested folder and its subfolders.
+   allow access. Google then gives Kurt-Folder-Reader read access to your whole
+   Drive. The server reads only files inside the folder named in the request and
+   its subfolders (a shortcut's target counts as inside). This folder limit is
+   not a security boundary: Claude can be led to name any folder your account
+   can open, for example by text inside a file Claude reads (see "File reads
+   limited to the named folder" in [ARCHITECTURE.md](ARCHITECTURE.md)).
 4. The browser says authentication succeeded, and `/mcp` shows gdrive-reader as
-   connected. From now on Claude Code renews the sign-in automatically, so you do
-   not need to sign in again.
+   connected. Claude Code renews the tokens the server issued to it
+   automatically, but the sign-in ends 30 days after this point, or earlier if
+   you revoke it at Google. After that, sign in again the same way.
 
-If you ask Claude about a folder before signing in, Claude tells you to sign in
-and gives you the sign-in link.
+Until you sign in, Claude Code shows at startup that gdrive-reader needs
+authentication, and the plugin's tools cannot run; sign in from `/mcp` as above.
 
 ## Use it
 
 - Name a folder: **"List the files in https://drive.google.com/drive/folders/…"**.
-  Any folder your Google account can open works.
+  Any folder your Google account can open can be named. Files over 10 MB (5 MB
+  for images) are never read (the cap is in the server code). The author's
+  server runs on Cloudflare's free plan, so a folder with dozens of subfolders,
+  or a file of several MB, may also fail (see "Limits and residual risks" in
+  [ARCHITECTURE.md](ARCHITECTURE.md)).
 - Without a folder, **"List the files in the Drive folder"** lists the default
   folder: the test folder OakMega shared for this take-home assignment (set as
   `DEFAULT_FOLDER` in `backend/wrangler.toml`). Your Google account needs access
   to it.
-- Then ask about a file in the listed folder. For the test folder, for example:
-  **"Read the PDF"** or **"What is in the image?"**.
+- Then ask about a file in the listed folder. For the test folder (one PDF and
+  one image), for example: **"Read the PDF"** or **"What is in the image?"**.
 
 ## Where your tokens and data are stored
 
 - **Claude Code** keeps the tokens this server issued to it (an access token and a
   refresh token) in the macOS keychain, or in Claude Code's credentials file on
   other systems.
-- **The server** (`https://gdrive-reader-broker.gdrive-reader-broker.workers.dev`,
-  the URL in `plugins/gdrive-reader/.mcp.json`) stores a record of your sign-in
-  in Cloudflare Workers KV. That record holds your Google tokens in encrypted
-  form; the decryption key is itself encrypted with the tokens Claude Code holds,
-  so the data in Workers KV cannot be decrypted without them. The server stores
-  those Claude Code tokens only as hashes. File contents pass through the server
-  only while it answers a request; the server does not store or log them (see
+- **The server** (`https://gdrive-reader-broker.gdrive-reader-broker.workers.dev`;
+  `plugins/gdrive-reader/.mcp.json` points to its `/mcp` path) stores a record of
+  your sign-in in Cloudflare Workers KV (Cloudflare's key-value store). That record holds your Google tokens in
+  encrypted form; the decryption key is itself encrypted with the tokens Claude
+  Code holds, and the server stores those Claude Code tokens only as hashes. So a
+  copy of Workers KV alone does not reveal your Google tokens. The server can
+  decrypt them only while it answers a request, because only a request carries
+  a Claude Code token. The record is stored under your Google account id and
+  labeled with your email; both are in plain text. File contents pass through
+  the server only while it answers a request; the server does not store or log them (see
   `backend/src/mcp.ts` and `backend/src/drive.ts`).
+- **On your machine**, Claude Code keeps copies of the files it read (tool
+  results) under `~/.claude/projects/` until its own cleanup.
 - **To sign out**: `/mcp` → gdrive-reader → **Clear authentication**, and remove
   Kurt-Folder-Reader at <https://myaccount.google.com/permissions>.
 
@@ -81,13 +95,15 @@ and gives you the sign-in link.
 | The sign-in page says **"Google Drive read access was not granted"** | You left the Drive checkbox unticked on Google's page. Sign in again (`/mcp` → gdrive-reader → **Authenticate**) and tick the checkbox. |
 | Google says **"Access blocked"** or that your admin has restricted the app | The admin of your Google Workspace (company or school) account blocks unverified third-party apps. Use a personal Gmail account that can open the folder. |
 | Claude answers with a different Google Drive tool | Another Google Drive integration is enabled, such as the Google Drive connector from claude.ai. Turn it off in `/mcp`, or say **"Use the gdrive-reader plugin"**. |
-| Claude says a file is **outside the folder** | The server reads only files inside the folder you named and its subfolders. Name the folder that contains the file. |
+| Claude says a file is **outside the folder** | The server reads only files inside the folder you named and its subfolders. Name the folder that contains the file. A folder with more than 2,000 entries or 20 levels is listed only in part, and files past that cut are reported the same way. |
 | Claude Code runs over SSH and the browser is on another machine | When you choose **Authenticate**, Claude Code also prints the sign-in URL; open it in the browser on your own machine and sign in. At the end the browser is sent to Claude Code's `localhost` page, which fails to load because Claude Code runs on the other machine. Copy that page's full URL from the address bar and paste it into your conversation with Claude; Claude uses that URL to finish the sign-in. |
 
 ## Run your own server (self-host)
 
-You need a Google account, a Cloudflare account (the free plan is enough for
-files within the limits listed in [ARCHITECTURE.md](ARCHITECTURE.md)), Node.js
+You need a Google account, a Cloudflare account (the free plan handles small
+files and folders such as the take-home test folder; folders with dozens of
+subfolders, or files of several MB up to the 10 MB cap, may need the paid
+plan, see "Limits and residual risks" in [ARCHITECTURE.md](ARCHITECTURE.md)), Node.js
 with npm, and a clone of this repository.
 
 1. **Google Cloud project**: <https://console.cloud.google.com/> → create a project →
