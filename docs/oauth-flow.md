@@ -113,7 +113,7 @@ sequenceDiagram
 | 2 | 經瀏覽器 | 伺服器產生 B 和 state，把 state 的雜湊值存進 cookie，再把瀏覽器轉到 Google 的同意畫面，網址上帶著 B 的雜湊值和 state。 |
 | 3 | 經瀏覽器 | 你按 **Continue**，Google 把瀏覽器轉回伺服器的 `/callback`，網址上帶著 Google 的授權碼和原本的 state。伺服器算出網址上 state 的雜湊值，確認和 cookie 裡存的一樣。 |
 | 4 | 直接連線 | 伺服器把 Google 的授權碼、B 的原值和用戶端密鑰交給 Google，換到 Google token。接著先確認 Google token 有 Drive 讀取權限（Google 會把你以前給過、還沒移除的權限也算進去，所以這次沒勾也可能通過）、Google 有給 refresh token；缺任一項，伺服器就不發授權碼，第 5 步改把錯誤轉回 Claude Code，登入失敗。都通過才用 Google token 查出你的帳號 ID 與 email。 |
-| 5 | 經瀏覽器 | 伺服器加密存放 Google token（金鑰怎麼保管見 README 的「Token 與資料存放」），發伺服器的授權碼（綁著用戶端 ID 和 A 的雜湊值），把瀏覽器轉到第 1 步的接收網址，Claude Code 在那裡收到授權碼。 |
+| 5 | 經瀏覽器 | 伺服器加密存放 Google token（金鑰怎麼保管見 [data-storage.md](data-storage.md)），發伺服器的授權碼（綁著用戶端 ID 和 A 的雜湊值），把瀏覽器轉到第 1 步的接收網址，Claude Code 在那裡收到授權碼。 |
 | 6 | 直接連線 | Claude Code 把伺服器的授權碼、用戶端 ID 和 A 的原值交給伺服器。伺服器確認授權碼沒用過、沒過期（10 分鐘）、是發給這個用戶端 ID 的，A 的原值算出的雜湊值等於授權碼綁著的那個，而且若附上接收網址，它和第 1 步的完全相同（連接埠號碼也要相同），才發 Claude Code token。 |
 
 Claude Code 跑在遠端主機上（例如你用 SSH 遠端登入那台主機）時，Claude Code 開不了你電腦的瀏覽器，

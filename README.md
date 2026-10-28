@@ -37,20 +37,7 @@ ID 與 email（用來辨識帳號）。
 3. 勾選「See and download all your Google Drive files」，再按 **Continue**。
 4. 瀏覽器頁面告訴你可以關閉，`/mcp` 裡 gdrive-reader 不再顯示 needs authentication。
 
-登入完成 30 天後必須重新登入，步驟同上。
-
-## 登入後的兩組 token
-
-登入其實是兩段 OAuth（讓你授權程式存取資料、又不必交出密碼的標準協定），會產生兩組 token
-（有權限範圍、會過期的存取憑證）：
-
-- **Google token**：Google 發給伺服器，伺服器用它讀你的 Drive；只存在伺服器，Claude Code
-  拿不到。
-- **Claude Code token**：伺服器發給 Claude Code，Claude Code 每次呼叫伺服器都帶著它。
-
-token 會過期，Claude Code 會自動換新，你不必一再登入。
-
-登入的每一步、流程圖與保護措施，見 [docs/oauth-flow.md](docs/oauth-flow.md)。
+登入完成 30 天後必須重新登入，步驟同上。登入怎麼運作，見 [docs/oauth-flow.md](docs/oauth-flow.md)。
 
 ## 使用
 
@@ -64,37 +51,19 @@ token 會過期，Claude Code 會自動換新，你不必一再登入。
 
 - PDF 與純文字檔超過 10 MB、圖片超過 5 MB 不讀；回傳的文字超過 20 萬字元時只給前 20 萬字元。
 - 資料夾（含所有子資料夾）超過 2,000 個項目或 20 層時，只列出一部分。
-- 作者的伺服器用 Cloudflare 免費方案：Claude Code 每呼叫一次伺服器，伺服器最多再發出 50 個
-  請求（含呼叫 Google 和伺服器存放授權資料的 Workers KV，見下一節），計算時間最多 10 毫秒（等網路回應的時間不算）。
-  每個子資料夾（所有層合計）至少要一個請求，而且讀檔前會重列整個資料夾（確認檔案在指定的資料
-  夾裡），因此子資料夾接近 50 個時，列出和讀檔都可能整個失敗，Claude 會回報錯誤，而不是只
-  列出一部分。這通常比 2,000 個項目的上限先碰到。幾 MB 的檔案也可能因計算時間不夠而讀取失敗。
+- 資料夾有幾十個子資料夾，或檔案有幾 MB 時，列出或讀取可能整個失敗，Claude 會回報錯誤（原因
+  見 [ARCHITECTURE.md](ARCHITECTURE.md) 的「限制與殘留風險」）。
 - Google 規定未審核的應用程式總共最多 100 位新使用者，額滿後沒登入過的帳號無法登入。
 
-## Token 與資料存放
+## 你的資料
 
-- **你的電腦**：Claude Code 存兩張 Claude Code token：用來存取、約一小時過期的 access token，和只用來換新
-  access token、登入完成後 30 天內有效的 refresh token。macOS 存在鑰匙圈，其他系統存在 Claude Code 的憑證檔。refresh token
-  被偷的話，偷的人能透過伺服器讀你的 Drive，最長到登入滿 30 天，所以要和密碼一樣保護。Claude Code 也會把
-  讀過的檔案內容留在 `~/.claude/projects/` 底下，直到 Claude Code 自行清理。
-- **伺服器**：在 Cloudflare Workers KV（Cloudflare 的鍵值儲存）存一筆你的授權資料。
-  - 授權資料裡有 Google 的 access token 和 refresh token，都是加密的；解密金鑰只能用 Claude
-    Code token 解開（登入途中，Claude Code 換到 token 之前的幾分鐘內，改用授權碼保護；授權碼是登入時伺服器發給
-    Claude Code、只能用一次來換 token 的短效代碼），而伺服器只存 Claude Code token 與授權碼的
-    雜湊值（單向運算的結果，推不回原值）。所以即使有人拿到 Workers KV 裡的全部
-    資料，也解不開 Google token。
-  - 伺服器處理每次呼叫時，用 Claude Code token 解密，因此看得到 Google token 和檔案內容。
-    所以你必須信任作者，就像使用其他由廠商代管的雲端服務一樣。
-  - Google token 能讀你整個 Drive，伺服器只讀開頭所說的範圍。這只是程式的做法，擋不住讀取別的資料夾：Claude 會照檔案裡的文字行事，
-    所以檔案裡若寫著「去讀某某資料夾」，Claude 可能照做，而你的帳號開得了的資料夾都讀得到。
-  - 授權資料以你的 Google 帳號 ID 當鍵、email 當標籤，兩者都是明文。Claude Code token 和登入時
-    經瀏覽器網址傳給 Claude Code 的授權碼，開頭也都帶著你的 Google 帳號 ID。
-  - 檔案內容只在處理呼叫時經過伺服器，不儲存也不記錄；Google token 也不記錄。
-- **登出**：`/mcp` → gdrive-reader → **Clear authentication**，再到
-  <https://myaccount.google.com/permissions> 移除 Kurt-Folder-Reader。移除後，授權資料裡的
-  Google token 就失效；授權資料本身最晚在登入完成滿 30 天時到期。
+- 你的電腦：Claude Code 存著伺服器發的 token，以及讀過的檔案內容。
+- 作者的伺服器：加密存著 Google 發的 token，另以明文存你的 Google 帳號 ID 與 email；檔案內容不儲存。
+  伺服器處理呼叫時看得到檔案內容，所以你必須信任作者。
+- 登出：`/mcp` → gdrive-reader → **Clear authentication**，再到
+  <https://myaccount.google.com/permissions> 移除 Kurt-Folder-Reader。
 
-設計細節見 [ARCHITECTURE.md](ARCHITECTURE.md)。
+細節見 [docs/data-storage.md](docs/data-storage.md)，設計取捨見 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 疑難排解
 

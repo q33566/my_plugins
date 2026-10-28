@@ -2,7 +2,7 @@
 
 這個外掛讓 Claude Code 列出並讀取使用者能開啟的 Google Drive 資料夾裡的檔案。它是 OakMega
 回家作業的成品，預設資料夾就是作業的測試資料夾（一個 PDF、一張圖片）。所有使用者共用同一個
-Worker，由作者架在 Cloudflare 的免費方案上。安裝、使用與資料存放見 [README](README.md)，登入的
+Worker，由作者架在 Cloudflare 的免費方案上。安裝與使用見 [README](README.md)，資料存放見 [docs/data-storage.md](docs/data-storage.md)，登入的
 每一步見 [docs/oauth-flow.md](docs/oauth-flow.md)；這份文件說明元件、設計取捨與限制。
 
 ## 元件
@@ -20,7 +20,7 @@ Claude Code ──HTTPS（MCP，streamable HTTP）──▶ Cloudflare Worker  /
 Worker 的網址。
 
 下面用到的詞：圖中的 OAuth 函式庫下稱「provider」。每完成一次登入，就在 Workers KV 留一筆
-**授權資料**（grant，README 同名）。授權資料帶著 **props**，也就是 Worker 附在上面、加密存放的資料；這裡的
+**授權資料**（grant，和 docs/data-storage.md 同名）。授權資料帶著 **props**，也就是 Worker 附在上面、加密存放的資料；這裡的
 props 是使用者的 Google token 與 email（email 另外以明文存成授權資料的標籤）。`beginUpstream()`、`finishUpstream()`、`completeAuthorization()` 與
 `tokenExchangeCallback` 是 provider 的 API，「upstream」指 Google。三個工具：`drive_list_folder`
 列出資料夾樹，`drive_read_file` 讀一個檔案，`drive_auth_status` 顯示登入的帳號。
@@ -52,7 +52,7 @@ props 是使用者的 Google token 與 email（email 另外以明文存成授權
   運作：不用安裝任何東西、從 `/mcp` 登入、token 由 Claude Code 保管與換新。舊版的做法見
   「放棄的方案」。
 - **Google token 放在伺服器，每筆授權資料各自加密。** 加密方式、哪些資料是明文，以及為什麼使用者
-  必須信任作者，見 README 的「Token 與資料存放」。
+  必須信任作者，見 [docs/data-storage.md](docs/data-storage.md)。
 - **只接受本機接收網址，沒有用戶端核准頁。** 動態註冊（`/register`）讓任何人都能註冊用戶端，並
   自訂接收網址。像這個伺服器一樣、所有使用者共用同一個 Google OAuth 用戶端的伺服器，MCP Security
   Best Practices 要求加一頁用戶端核准頁：轉到 Google 之前，先請使用者核准這個註冊的用戶端。這裡
@@ -78,9 +78,13 @@ props 是使用者的 Google token 與 email（email 另外以明文存成授權
 
 ## 限制與殘留風險
 
-README「使用」一節的上限已列出檔案大小、資料夾項目數、免費方案的請求數與計算時間，以及 100 位新使用者的
-上限。這裡只補充原因與 README 沒寫的部分：
+README「使用」一節的上限已列出檔案大小、資料夾項目數，以及 100 位新使用者的上限。這裡補充原因
+與其他限制：
 
+- Cloudflare 免費方案：Claude Code 每呼叫一次伺服器，伺服器最多再發出 50 個子請求（含呼叫 Google
+  和 Workers KV），CPU 時間最多 10 毫秒（等網路回應的時間不算）。每個子資料夾（所有層合計）至少要
+  一個子請求，而且讀檔前會重列整個資料夾（確認檔案在指定的資料夾裡），因此子資料夾接近 50 個時，
+  列出和讀檔都可能整個失敗，而不是只列出一部分；這通常比 2,000 個項目的上限先碰到。
 - 測試檔（300 KB 圖片、600 KB PDF）編碼成 base64 文字回傳，在免費方案的限制內；幾 MB 的檔案或有幾十個
   子資料夾的資料夾，可能需要付費方案（每月 5 美元：30 秒 CPU、10,000 個子請求）。
 - 下載上限是為了讓回應小於 Claude Code 的 16 MiB 上限；檔案太大時不讀，並告訴 Claude 檔案大小與
