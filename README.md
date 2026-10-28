@@ -1,6 +1,6 @@
-# Google Drive Reader：Claude Code plugin
+# Google Drive Reader：Claude Code 外掛
 
-在 Claude Code 裡詢問 Google Drive 資料夾裡的檔案。這個 plugin 把 Claude Code 接到作者架在
+在 Claude Code 裡詢問 Google Drive 資料夾裡的檔案。這個外掛（plugin）把 Claude Code 接到作者架在
 Cloudflare Workers 上的遠端 MCP 伺服器（MCP 是讓 Claude Code 這類 AI 應用程式呼叫外部
 工具的開放協定）。你用 Google 帳號登入後，伺服器取得讀取你整個 Drive 的唯讀權限，以及你的帳號
 ID 與 email（用來辨識帳號）。
@@ -48,8 +48,7 @@ ID 與 email（用來辨識帳號）。
   拿不到。
 - **Claude Code token**：伺服器發給 Claude Code，Claude Code 每次呼叫伺服器都帶著它。
 
-每組都有一張 **access token**（用來存取，約一小時過期）和一張 **refresh token**（只用來換新的
-access token）。Claude Code 會自動換新，你不必每小時重新登入；但換新不會延長 30 天的登入期限。
+token 會過期，Claude Code 會自動換新，你不必一再登入。
 
 登入的每一步、流程圖與保護措施，見 [docs/oauth-flow.md](docs/oauth-flow.md)。
 
@@ -66,32 +65,31 @@ access token）。Claude Code 會自動換新，你不必每小時重新登入�
 - PDF 與純文字檔超過 10 MB、圖片超過 5 MB 不讀；回傳的文字超過 20 萬字元時只給前 20 萬字元。
 - 資料夾（含所有子資料夾）超過 2,000 個項目或 20 層時，只列出一部分。
 - 作者的伺服器用 Cloudflare 免費方案：Claude Code 每呼叫一次伺服器，伺服器最多再發出 50 個
-  請求（含呼叫 Google 和伺服器存放授權資料的 Workers KV，見下一節），計算時間最多 10 ms（等網路回應的時間不算）。
+  請求（含呼叫 Google 和伺服器存放授權資料的 Workers KV，見下一節），計算時間最多 10 毫秒（等網路回應的時間不算）。
   每個子資料夾（所有層合計）至少要一個請求，而且讀檔前會重列整個資料夾（確認檔案在指定的資料
   夾裡），因此子資料夾接近 50 個時，列出和讀檔都可能整個失敗，Claude 會回報錯誤，而不是只
   列出一部分。這通常比 2,000 個項目的上限先碰到。幾 MB 的檔案也可能因計算時間不夠而讀取失敗。
-- Google 規定未審核的應用程式（這裡是 Kurt-Folder-Reader）總共最多 100 位新使用者，額滿後沒登入過的帳號無法登入。
+- Google 規定未審核的應用程式總共最多 100 位新使用者，額滿後沒登入過的帳號無法登入。
 
-## token 與資料存放
+## Token 與資料存放
 
-- **你的電腦**：Claude Code 存兩張 Claude Code token：約一小時過期的 access token，和登入
-  完成後 30 天內有效的 refresh token。macOS 存在鑰匙圈，其他系統存在 Claude Code 的憑證檔。refresh token
+- **你的電腦**：Claude Code 存兩張 Claude Code token：用來存取、約一小時過期的 access token，和只用來換新
+  access token、登入完成後 30 天內有效的 refresh token。macOS 存在鑰匙圈，其他系統存在 Claude Code 的憑證檔。refresh token
   被偷的話，偷的人能透過伺服器讀你的 Drive，最長到登入滿 30 天，所以要和密碼一樣保護。Claude Code 也會把
-  讀過的檔案內容留在 `~/.claude/projects/` 底下。
+  讀過的檔案內容留在 `~/.claude/projects/` 底下，直到 Claude Code 自行清理。
 - **伺服器**：在 Cloudflare Workers KV（Cloudflare 的鍵值儲存）存一筆你的授權資料。
   - 授權資料裡有 Google 的 access token 和 refresh token，都是加密的；解密金鑰只能用 Claude
-    Code token 解開（登入途中，Claude Code 換到 token 之前的幾分鐘內，改用伺服器發給 Claude Code 的授權碼保護），
-    而伺服器只存 Claude Code token 與授權碼的雜湊值。所以即使有人拿到 KV 裡的全部
+    Code token 解開（登入途中，Claude Code 換到 token 之前的幾分鐘內，改用授權碼保護；授權碼是登入時伺服器發給
+    Claude Code、只能用一次來換 token 的短效代碼），而伺服器只存 Claude Code token 與授權碼的
+    雜湊值（單向運算的結果，推不回原值）。所以即使有人拿到 Workers KV 裡的全部
     資料，也解不開 Google token。
   - 伺服器處理每次呼叫時，用 Claude Code token 解密，因此看得到 Google token 和檔案內容。
     所以你必須信任作者，就像使用其他由廠商代管的雲端服務一樣。
-  - Google token 能讀你整個 Drive。伺服器只讀 Claude 在工具呼叫中指定的資料夾、它的子資料夾，
-    以及其中捷徑指向的檔案與資料夾（連同那些資料夾的子資料夾），捷徑可以指向資料夾外；沒指定
-    資料夾時讀範例資料夾。這只是程式的做法，不是安全邊界：檔案裡的文字也可能讓 Claude 改指定別的
-    資料夾。
+  - Google token 能讀你整個 Drive，伺服器只讀開頭所說的範圍。這只是程式的做法，擋不住讀取別的資料夾：Claude 會照檔案裡的文字行事，
+    所以檔案裡若寫著「去讀某某資料夾」，Claude 可能照做，而你的帳號開得了的資料夾都讀得到。
   - 授權資料以你的 Google 帳號 ID 當鍵、email 當標籤，兩者都是明文。Claude Code token 和登入時
     經瀏覽器網址傳給 Claude Code 的授權碼，開頭也都帶著你的 Google 帳號 ID。
-  - 檔案內容只在處理呼叫時經過伺服器，不儲存也不記錄。
+  - 檔案內容只在處理呼叫時經過伺服器，不儲存也不記錄；Google token 也不記錄。
 - **登出**：`/mcp` → gdrive-reader → **Clear authentication**，再到
   <https://myaccount.google.com/permissions> 移除 Kurt-Folder-Reader。移除後，授權資料裡的
   Google token 就失效；授權資料本身最晚在登入完成滿 30 天時到期。
@@ -105,13 +103,13 @@ access token）。Claude Code 會自動換新，你不必每小時重新登入�
 | 登入失敗，錯誤訊息是「Google Drive read access was not granted」 | 登入時沒勾「See and download all your Google Drive files」。重新登入並勾選。 |
 | Google 顯示「Access blocked」或說管理員限制了應用程式 | 公司或學校帳號的管理員封鎖了未審核的應用程式。改用能開該資料夾的個人 Gmail 帳號。 |
 | Claude 回報找不到資料夾或無法存取 | 你的 Google 帳號開不了這個資料夾。確認網址正確，並用能開它的帳號登入。 |
-| Claude 用了別的 Google Drive 工具 | 另一個 Google Drive 整合（例如 claude.ai 提供的）也開著。在 `/mcp` 關掉它，或說「用 gdrive-reader plugin」。 |
-| Claude 說檔案在資料夾外（outside the folder） | 伺服器只讀指定的資料夾、它的子資料夾和其中捷徑指向的檔案與資料夾（連同那些資料夾的子資料夾）。請指定包含該檔案的資料夾。資料夾超過上限只列出一部分時，超出的檔案也會這樣回報。 |
-| Claude Code 在遠端主機（SSH）上，瀏覽器在你的電腦 | 選 **Authenticate** 時 Claude Code 會印出登入網址，在你電腦的瀏覽器打開並登入。最後瀏覽器轉到的 `localhost` 頁面會打不開，把網址列的完整網址貼到 Claude Code 的對話框，Claude 會用它完成登入。 |
+| Claude 用了別的 Google Drive 工具 | 另一個 Google Drive 整合（例如 claude.ai 提供的）也開著。在 `/mcp` 關掉它，或說「用 gdrive-reader 外掛」。 |
+| Claude 說檔案在資料夾外（outside the folder） | 伺服器只讀開頭所說的範圍。請指定包含該檔案的資料夾。資料夾超過上限只列出一部分時，超出的檔案也會這樣回報。 |
+| Claude Code 跑在用 SSH 連線的遠端主機上，瀏覽器在你的電腦 | 選 **Authenticate** 時 Claude Code 會印出登入網址，在你電腦的瀏覽器打開並登入。最後瀏覽器轉到的本機位址（網址以 `http://localhost` 開頭）頁面會打不開，把網址列的完整網址貼到 Claude Code 的對話框，Claude 會用它完成登入。 |
 
 ## 開發
 
-在 repo 根目錄：
+在儲存庫（repo）根目錄：
 
 ```
 (cd backend && npm install && npm test)   # 對模擬的 Google 服務跑登入流程與工具的測試

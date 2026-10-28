@@ -1,165 +1,102 @@
-# Architecture
+# 架構
 
-The plugin lets Claude Code list and read files in a Google Drive folder the
-user can open. It was written for a take-home assignment from OakMega, whose
-test folder (one PDF and one image) is the default folder. One Worker, run by
-the author on Cloudflare's free plan, serves every user.
+這個外掛讓 Claude Code 列出並讀取使用者能開啟的 Google Drive 資料夾裡的檔案。它是 OakMega
+回家作業的成品，預設資料夾就是作業的測試資料夾（一個 PDF、一張圖片）。所有使用者共用同一個
+Worker，由作者架在 Cloudflare 的免費方案上。安裝、使用與資料存放見 [README](README.md)，登入的
+每一步見 [docs/oauth-flow.md](docs/oauth-flow.md)；這份文件說明元件、設計取捨與限制。
 
-## Components
+## 元件
 
 ```
-Claude Code ──HTTPS (MCP, streamable HTTP)──▶ Cloudflare Worker  /mcp
-  tokens in Claude Code's credential store      │  drive_list_folder / drive_read_file / drive_auth_status
-                                                │  OAuth server for Claude Code (@cloudflare/workers-oauth-provider)
-                                                │  KV: registered clients, grants (props encrypted), token hashes
-                                                ├──HTTPS──▶ Google OAuth (consent, token, refresh)
-                                                └──HTTPS──▶ Google Drive API v3 (read-only scope)
+Claude Code ──HTTPS（MCP，streamable HTTP）──▶ Cloudflare Worker  /mcp
+  token 存在 Claude Code 的憑證儲存區           │  三個工具：drive_list_folder / drive_read_file / drive_auth_status
+                                                │  給 Claude Code 用的 OAuth 伺服器（@cloudflare/workers-oauth-provider）
+                                                │  Workers KV：註冊過的用戶端、授權資料（props 加密）、token 雜湊值
+                                                ├──HTTPS──▶ Google OAuth（同意畫面、換發與更新 token）
+                                                └──HTTPS──▶ Google Drive API v3（唯讀權限）
 ```
 
-The plugin is one `.mcp.json` entry: `{"type": "http", "url": "<worker>/mcp"}`,
-where `<worker>` is the Worker's URL.
+外掛本身只有一筆 `.mcp.json` 設定：`{"type": "http", "url": "<worker>/mcp"}`，`<worker>` 是
+Worker 的網址。
 
-Terms used below: the Worker is the OAuth server for Claude Code, built with the
-`@cloudflare/workers-oauth-provider` library ("the provider"). Each completed
-sign-in is a **grant**, a record in Workers KV (Cloudflare's key-value store).
-A grant carries **props**, data the Worker attaches to it; here the props are the
-user's Google tokens and email (the email is also kept unencrypted as the
-grant's label, see below). `beginUpstream()`, `finishUpstream()`,
-`completeAuthorization()` and `tokenExchangeCallback` are the provider's API;
-"upstream" means Google. The tools: `drive_list_folder` lists a folder tree,
-`drive_read_file` reads one file, `drive_auth_status` shows the signed-in
-account.
+下面用到的詞：圖中的 OAuth 函式庫下稱「provider」。每完成一次登入，就在 Workers KV 留一筆
+**授權資料**（grant，README 同名）。授權資料帶著 **props**，也就是 Worker 附在上面、加密存放的資料；這裡的
+props 是使用者的 Google token 與 email（email 另外以明文存成授權資料的標籤）。`beginUpstream()`、`finishUpstream()`、`completeAuthorization()` 與
+`tokenExchangeCallback` 是 provider 的 API，「upstream」指 Google。三個工具：`drive_list_folder`
+列出資料夾樹，`drive_read_file` 讀一個檔案，`drive_auth_status` 顯示登入的帳號。
 
-## Sign-in flow
+## 登入流程
 
-1. Claude Code calls `/mcp` without a token and gets `401` with
-   `WWW-Authenticate: Bearer resource_metadata=…`. It reads the protected
-   resource metadata (RFC 9728) and the authorization server metadata (RFC 8414),
-   registers itself at `/register` (RFC 7591), and shows the server as "needs
-   authentication" in the `/mcp` command.
-2. The user chooses **Authenticate**. Claude Code opens `/authorize` with its PKCE
-   challenge and its `http://localhost:<port>/callback` redirect.
-3. The Worker refuses any client whose redirect is not a loopback address, makes
-   its own PKCE pair for Google, saves the request with `beginUpstream()` (which
-   binds the `state` to a cookie in this browser), and redirects to Google's
-   consent screen asking for `openid email drive.readonly` (`openid email`
-   identifies the account for the grant), with `access_type=offline` and
-   `prompt=consent`: Google sends a refresh token only on a fresh consent, so
-   every sign-in, including a repeat one, gets a new refresh token.
-4. Google redirects to `<worker>/callback`. `finishUpstream()` checks `state`
-   against the cookie (a `state` works only once), the Worker exchanges the code with its client
-   secret and verifier, checks that the Drive scope was granted and a refresh
-   token came back, and calls `completeAuthorization()` with the Google tokens as
-   the grant's props. The browser goes back to Claude Code's localhost callback.
-5. Claude Code exchanges its code at `/token`. The access token the Worker
-   issues expires five minutes before Google's, so Claude Code normally refreshes
-   before the Google token runs out (not if steps 4 to 6 of the first sign-in
-   take more than five minutes); when Claude Code refreshes, `tokenExchangeCallback`
-   renews the Google access token and stores it in the grant. If Google has
-   revoked the sign-in, the refresh fails with `invalid_grant` and Claude Code
-   asks the user to authenticate again.
+1. Claude Code 不帶 token 呼叫 `/mcp`，收到 `401` 與
+   `WWW-Authenticate: Bearer resource_metadata=…`。它讀取受保護資源的中繼資料（RFC 9728）與
+   授權伺服器的中繼資料（RFC 8414），再到 `/register` 註冊自己（RFC 7591）。
+2. 使用者選 **Authenticate**，Claude Code 開啟 `/authorize`，帶著它的 PKCE challenge 與接收網址
+   `http://localhost:<port>/callback`。
+3. Worker 為 Google 產生自己的一組 PKCE，用 `beginUpstream()` 存下這次請求（它把 `state` 綁到
+   這個瀏覽器的 cookie），再轉到 Google 的同意畫面，要求 `openid email drive.readonly`
+   （`openid email` 用來辨識授權資料屬於哪個帳號），並帶 `access_type=offline` 與
+   `prompt=consent`：Google 只在重新同意時才給 refresh token，所以每次登入（包括重複登入）都會拿到
+   新的 refresh token。
+4. Google 轉回 `<worker>/callback`。`finishUpstream()` 核對 `state` 與 cookie，Worker 用用戶端密鑰
+   與 PKCE verifier 換 Google token，確認有 Drive 權限、也拿到 refresh token，再呼叫
+   `completeAuthorization()`，把 Google token 存成授權資料的 props。瀏覽器轉回 Claude Code 的
+   localhost 接收網址。
+5. Claude Code 到 `/token` 用授權碼換 token。之後 Claude Code 每次換新時，
+   `tokenExchangeCallback` 都會更新 Google access token 並存回授權資料（效期怎麼對齊見
+   oauth-flow 的「自動換新」）。如果 Google 已撤銷授權，換新會以 `invalid_grant` 失敗，Claude Code
+   會請使用者重新登入。
 
-## Choices and why
+## 設計取捨
 
-- **Remote MCP server.** This is how hosted connectors (Notion, Linear, the
-  claude.ai connectors) work in Claude Code: nothing to install, sign-in from
-  `/mcp`, tokens kept and refreshed by Claude Code. The first version ran a local
-  Python server and kept Google tokens on the user's machine; it needed uv (a
-  Python tool installer), and the server itself started the sign-in at the first
-  tool call.
-- **Google tokens on the server, encrypted per grant.** The tokens the provider
-  issues to Claude Code are stored only as hashes. The Google tokens sit in the
-  grant's props, encrypted with a key that is itself wrapped by the tokens Claude
-  Code holds, so a copy of KV alone does not reveal Google tokens. It does reveal who signed
-  in: the grant is stored under the Google account id and keeps the email as a
-  plain-text label; only the props are encrypted. While serving a
-  request the Worker does decrypt them, and it sees the file contents it returns;
-  it stores the Google tokens only in that encrypted form, does not store file
-  contents, and logs neither. Users therefore have to trust the
-  operator, as with any hosted connector; here the operator is the author.
-- **Only loopback redirects, no client-approval page.** Dynamic registration
-  (`/register`) lets anyone register a client with a redirect of their
-  choosing. An attacker could register a client whose redirect is the
-  attacker's own server and send the user a sign-in link (an `/authorize` URL)
-  for that client. Google's consent screen names only the Worker's app,
-  Kurt-Folder-Reader, so nothing there shows who registered the client. The
-  authorization code that the Worker issues would then go to the attacker's
-  server, which could exchange it at `/token` for Worker tokens and read the
-  user's Drive through the tools. The MCP Security Best Practices require a
-  client-approval page for servers like this one, which use one OAuth client at
-  Google for all users: before sending the user to Google, the server asks the
-  user to approve the registered client. Instead, `/authorize` continues only
-  when the client's redirect is an `http://` loopback address (`localhost`,
-  `127.0.0.1` or `[::1]`), so the code goes to a program on the user's own
-  machine (see "Limits and residual risks").
-- **Stateless MCP handler** (`createMcpHandler`): a fresh server per request, no
-  Durable Objects. The tools need no server-to-client messages.
-- **Scope `drive.readonly`.** The narrowest scope that can list a folder someone
-  shared with you, including subfolders, and download its files. `drive.file`
-  with the Picker does not cover a picked folder's children. Because the scope is
-  "restricted", Google shows the unverified-app screen; verification needs an
-  annual third-party security assessment, out of scope here.
-- **Any folder, chosen per request.** The user names the folder (a Drive URL or
-  id) in the conversation, and Claude passes it to the tools as the `folder`
-  argument; with no folder named, the tools use the Worker's `DEFAULT_FOLDER` (the take-home
-  test folder on the author's server). The
-  folder is a tool argument rather than a plugin setting because it can change
-  from one request to the next.
-- **File reads limited to the named folder (not a security boundary).**
-  `drive.readonly` reaches the whole Drive. To keep each read to the folder the
-  request is about, `drive_read_file` serves a file only if walking the named
-  folder (or the default folder) finds it; shortcut targets count as inside. A
-  file id alone, for example one Claude remembered from another folder, is
-  therefore not enough. This does not stop reads elsewhere: the user can name any folder, and text
-  inside a file that asks Claude to read something else can name a folder too,
-  including the whole My Drive (`root`), and a shortcut in a shared folder can
-  point anywhere; any folder the account can open is readable by design.
-- **PDFs as files, not parsed on the server.** Text extraction would exceed the
-  free plan's 10 ms CPU per request. The PDF is returned as an embedded resource;
-  Claude Code saves it and Claude reads it with its `Read` tool, which also shows the pages
-  as images (scanned PDFs work the same way). Images return as MCP image blocks;
-  Google Docs/Sheets/Slides are exported as text by Drive.
+- **遠端 MCP 伺服器。** Claude Code 裡的代管連接器（Notion、Linear、claude.ai 的連接器）都這樣
+  運作：不用安裝任何東西、從 `/mcp` 登入、token 由 Claude Code 保管與換新。舊版的做法見
+  「放棄的方案」。
+- **Google token 放在伺服器，每筆授權資料各自加密。** 加密方式、哪些資料是明文，以及為什麼使用者
+  必須信任作者，見 README 的「Token 與資料存放」。
+- **只接受本機接收網址，沒有用戶端核准頁。** 動態註冊（`/register`）讓任何人都能註冊用戶端，並
+  自訂接收網址。像這個伺服器一樣、所有使用者共用同一個 Google OAuth 用戶端的伺服器，MCP Security
+  Best Practices 要求加一頁用戶端核准頁：轉到 Google 之前，先請使用者核准這個註冊的用戶端。這裡
+  改成只在用戶端的接收網址是 `http://` 本機位址（`localhost`、`127.0.0.1` 或 `[::1]`）時，
+  `/authorize` 才繼續，讓授權碼只送到使用者自己電腦上的程式。這樣擋得住的攻擊與擋不住的情況，見
+  oauth-flow 的「保護措施」。
+- **無狀態 MCP 處理器**（`createMcpHandler`）：每個請求建立一個新的伺服器，不用 Durable Objects。
+  工具不需要由伺服器主動傳訊息給用戶端。
+- **權限 `drive.readonly`。** 能列出別人分享給你的資料夾（含子資料夾）並下載檔案的最小權限。
+  `drive.file` 搭配 Picker 涵蓋不到所選資料夾底下的檔案。這個權限屬於「受限制」等級，所以 Google
+  會顯示未審核應用程式的畫面；審核需要每年一次的第三方資安評估，不在這次範圍內。
+- **資料夾每次請求自由指定。** 使用者在對話裡給資料夾（Drive 網址或 ID），Claude 把它當作工具的
+  `folder` 參數傳入；沒給時，工具用 Worker 的 `DEFAULT_FOLDER`。資料夾是工具參數而不是外掛設定，
+  因為每次請求的資料夾可能不同。
+- **讀檔只限指定的資料夾（不是安全邊界）。** `drive.readonly` 能讀整個 Drive。為了讓每次讀取只限於
+  這次請求的資料夾，`drive_read_file` 只在走訪指定資料夾（或預設資料夾）時找得到該檔案才回傳；捷徑
+  指向的檔案也算在內。所以只有檔案 ID（例如 Claude 記得的另一個資料夾裡的檔案）不夠。這擋不住讀取
+  別處：使用者可以指定任何資料夾，檔案裡要 Claude 讀別的東西的文字也能指定資料夾，包括整個「我的
+  雲端硬碟」（`root`），共用資料夾裡的捷徑也能指向任何地方；帳號開得了的資料夾，設計上都讀得到。
+- **PDF 以檔案回傳，不在伺服器解析。** 抽文字會超過免費方案每個請求 10 毫秒的 CPU 時間。PDF 以
+  embedded resource 回傳，Claude Code 存成檔案，Claude 再用 `Read` 工具讀，它也會把頁面當圖片看。
+  圖片以 MCP 圖片區塊回傳；Google 文件、試算表、簡報由 Drive 匯出成文字。
 
-## Limits and residual risks
+## 限制與殘留風險
 
-- Free plan: 10 ms CPU and 50 subrequests per request. Base64-encoding the test
-  files (300 KB image, 600 KB PDF) fits; files of several MB, or folders with dozens
-  of subfolders, may need the paid plan ($5/month: 30 s CPU, 10,000 subrequests).
-  Every file read walks the whole folder again, so a large folder makes reads
-  fail too, not only listings. A listing also stops at 2,000 entries or 20
-  levels; a file past that cut is reported as outside the folder.
-  Downloads are capped at 10 MB (5 MB for images) to stay under Claude Code's
-  16 MiB response limit; a larger file is not read, and Claude is told its size
-  and the limit.
-- Claude Code stays signed in for 30 days from the end of sign-in: the grant,
-  and every refresh token the provider issues for it, expires then (the
-  provider's default lifetime; refreshes do not extend it). After that the user
-  signs in again.
-- Without the client-approval page, one attack remains. An attacker can
-  register a client with a loopback redirect and get the user to open its
-  sign-in link; the state cookie is then set in the user's own browser, so
-  that check passes, and the code lands on the user's machine. The attacker
-  gets it, and with their PKCE verifier exchanges it for Worker tokens that read
-  the user's Drive, if a program of theirs already listens on that loopback
-  port, or if the user is tricked into sending them the final localhost URL
-  from the address bar.
-- Sign-in and every tool call need the Worker to be up.
-- A Google Workspace admin can block unverified apps or restricted scopes.
-- The unverified app is limited to 100 new users over its lifetime.
-- Over SSH the browser cannot reach Claude Code's localhost callback; the user
-  pastes the callback URL into the conversation in Claude Code instead.
-- Claude Code keeps copies of files it read (tool results) under
-  `~/.claude/projects/` until its own cleanup.
+README「使用」一節的上限已列出檔案大小、資料夾項目數、免費方案的請求數與計算時間，以及 100 位新使用者的
+上限。這裡只補充原因與 README 沒寫的部分：
 
-## Rejected alternatives
+- 測試檔（300 KB 圖片、600 KB PDF）編碼成 base64 文字回傳，在免費方案的限制內；幾 MB 的檔案或有幾十個
+  子資料夾的資料夾，可能需要付費方案（每月 5 美元：30 秒 CPU、10,000 個子請求）。
+- 下載上限是為了讓回應小於 Claude Code 的 16 MiB 上限；檔案太大時不讀，並告訴 Claude 檔案大小與
+  上限。
+- 登入完成 30 天後，授權資料和 provider 為它發的每張 refresh token 一起到期（provider 的預設效期，
+  換新不會延長）。
+- 沒有用戶端核准頁，仍有一種攻擊擋不住，見 oauth-flow 的「仍然擋不住的情況」。
+- 登入與每次工具呼叫都需要 Worker 正常運作。
+- Google Workspace 管理員可以封鎖未審核的應用程式或受限制的權限。
 
-- **Local MCP server with tokens on the user's machine** (v0.1.0): keeps Google
-  tokens off any server, but needs uv, and the server starts the sign-in
-  itself at the first tool call instead of using Claude Code's standard `/mcp`
-  flow.
-- **Google Cloud Run instead of Workers**: no 10 ms CPU limit per request, but
-  the OAuth server with encrypted grant props, which Workers gets from one
-  library, would have to be assembled from other parts; it also needs a billing
-  account and has cold starts.
-- **Service account / API key**: not the user's OAuth; the folder is shared with
-  the user, not with a service account.
+## 放棄的方案
+
+- **本機 MCP 伺服器，token 存在使用者電腦**（v0.1.0）：Google token 不經過任何伺服器，但需要安裝
+  uv（Python 工具安裝程式），而且由伺服器在第一次呼叫工具時自己開始登入，而不是用 Claude Code
+  標準的 `/mcp` 流程。
+- **改用 Google Cloud Run 而不是 Workers**：沒有每個請求 10 毫秒的 CPU 限制，但 Workers 用一個
+  函式庫就有的 OAuth 伺服器（含加密的授權資料 props），得用其他元件自己組；另外還需要帳單帳戶，
+  而且有冷啟動。
+- **服務帳戶／API 金鑰**：不是使用者本人的 OAuth；資料夾是分享給使用者，不是分享給服務帳戶。
