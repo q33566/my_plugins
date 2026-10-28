@@ -3,8 +3,7 @@
 The plugin lets Claude Code list and read files in a Google Drive folder the
 user can open. It was written for a take-home assignment from OakMega, whose
 test folder (one PDF and one image) is the default folder. One Worker, run by
-the author on Cloudflare's free plan, serves every user; anyone can deploy their
-own copy (README, "Run your own server").
+the author on Cloudflare's free plan, serves every user.
 
 ## Components
 

@@ -1,166 +1,100 @@
-# Google Drive Reader — a Claude Code plugin
+# Google Drive Reader：Claude Code plugin
 
-Ask Claude Code about the files in a Google Drive folder. This plugin is the
-author's solution to a take-home assignment from OakMega. The plugin connects
-Claude Code to a remote MCP server that the author runs on Cloudflare Workers.
-(MCP, the Model Context Protocol, is how Claude Code calls outside tools.) The
-server signs you in with Google OAuth and asks only for read-only Drive access
-(plus your email, to identify your account). It lists the files in the folder you name and in its subfolders, and reads
-files: Google Docs, Sheets and Slides and text files come back as text, images
-as images, and PDFs as files that Claude reads page by page, including scanned
-PDFs. For other file types, Claude is told the file cannot be read.
+在 Claude Code 裡詢問 Google Drive 資料夾裡的檔案。這是作者為 OakMega 公司的面試作業
+（take-home assignment）寫的 plugin。它把 Claude Code 接到作者架在 Cloudflare Workers
+上的遠端 MCP 伺服器（MCP 是 Claude Code 呼叫外部工具的協定）。伺服器用 Google OAuth 讓你
+登入，向 Google 要的權限是「讀取整個 Drive」（唯讀），外加你的 email，用來辨識帳號。
 
-The plugin cannot search Drive, write to Drive, or watch files for changes.
+它能列出你指定的資料夾及其子資料夾裡的檔案（上限見「使用」一節），並讀取檔案：
 
-## Install
+- Google 文件、簡報與純文字檔：以文字回傳。Google 試算表只回傳第一個工作表。
+- 圖片（PNG、JPEG、GIF、WebP）：以圖片回傳。
+- PDF：以檔案回傳，由 Claude 逐頁讀取，掃描版也可以。
+- 其他類型：Claude 會被告知無法讀取。
 
-**Prerequisites**: Claude Code 2.1.310 or later (check with `claude --version`)
-and a Google account that can open the folder you want to read. Nothing else to
-install.
+它不能搜尋 Drive，也不能寫入 Drive。
 
-In Claude Code, add this repository as a plugin source (a "marketplace"), then
-install the plugin, named `gdrive-reader`, from it:
+## 安裝
+
+需要 Claude Code 2.1.310 以上（用 `claude --version` 確認），以及一個能開啟你要讀的資料夾
+的 Google 帳號。在 Claude Code 裡執行：
 
 ```
 /plugin marketplace add q33566/my_plugins
 /plugin install gdrive-reader@gdrive-reader-marketplace
 ```
 
-If Claude Code asks you to, run `/reload-plugins` (or restart Claude Code).
+若 Claude Code 要求，再執行 `/reload-plugins` 或重開 Claude Code。
 
-## Sign in
+## 登入
 
-1. Run `/mcp`, select gdrive-reader (it shows **needs authentication**) and
-   choose **Authenticate**. Claude Code opens your browser.
-2. Pick your Google account. Google shows **"Google hasn't verified this app"**
-   because the author's OAuth app, Kurt-Folder-Reader, has not gone through
-   Google's verification (see [ARCHITECTURE.md](ARCHITECTURE.md)). Click
-   **Advanced**, then **Go to Kurt-Folder-Reader (unsafe)**.
-3. Tick the checkbox **"See and download all your Google Drive files"**, then
-   allow access. Google then gives Kurt-Folder-Reader read access to your whole
-   Drive. The server reads only files inside the folder named in the request and
-   its subfolders (a shortcut's target counts as inside). This folder limit is
-   not a security boundary: Claude can be led to name any folder your account
-   can open, for example by text inside a file Claude reads (see "File reads
-   limited to the named folder" in [ARCHITECTURE.md](ARCHITECTURE.md)).
-4. The browser says authentication succeeded, and `/mcp` shows gdrive-reader as
-   connected. Claude Code renews the tokens the server issued to it
-   automatically, but the sign-in ends 30 days after this point, or earlier if
-   you revoke it at Google. After that, sign in again the same way.
+1. 執行 `/mcp`，選 gdrive-reader（顯示 **needs authentication**），再選
+   **Authenticate**。Claude Code 會開啟瀏覽器。
+2. 選你的 Google 帳號。Google 會顯示「Google hasn't verified this app」，因為作者的 OAuth
+   應用程式 Kurt-Folder-Reader 沒有送 Google 驗證。點 **Advanced**，再點
+   **Go to Kurt-Folder-Reader (unsafe)**。
+3. 勾選「See and download all your Google Drive files」，再按 **Continue**。
+4. 瀏覽器顯示驗證成功，`/mcp` 裡 gdrive-reader 顯示為已連線。
 
-Until you sign in, Claude Code shows at startup that gdrive-reader needs
-authentication, and the plugin's tools cannot run; sign in from `/mcp` as above.
+登入後有兩組 token：
 
-## Use it
+- **Google token**：Google 發給伺服器，伺服器用它讀你的 Drive。
+- **Claude Code token**：伺服器發給 Claude Code，Claude Code 用它呼叫伺服器。
 
-- Name a folder: **"List the files in https://drive.google.com/drive/folders/…"**.
-  Any folder your Google account can open can be named. Files over 10 MB (5 MB
-  for images) are never read (the cap is in the server code). The author's
-  server runs on Cloudflare's free plan, so a folder with dozens of subfolders,
-  or a file of several MB, may also fail (see "Limits and residual risks" in
-  [ARCHITECTURE.md](ARCHITECTURE.md)).
-- Without a folder, **"List the files in the Drive folder"** lists the default
-  folder: the test folder OakMega shared for this take-home assignment (set as
-  `DEFAULT_FOLDER` in `backend/wrangler.toml`). Your Google account needs access
-  to it.
-- Then ask about a file in the listed folder. For the test folder (one PDF and
-  one image), for example: **"Read the PDF"** or **"What is in the image?"**.
+Claude Code 會自動更新 Claude Code token，但不會延長期限：登入完成 30 天後必須重新登入。
+若你在 Google 撤銷授權，會更早失效。重新登入的步驟同上。
 
-## Where your tokens and data are stored
+## 使用
 
-- **Claude Code** keeps the tokens this server issued to it (an access token and a
-  refresh token) in the macOS keychain, or in Claude Code's credentials file on
-  other systems.
-- **The server** (`https://gdrive-reader-broker.gdrive-reader-broker.workers.dev`;
-  `plugins/gdrive-reader/.mcp.json` points to its `/mcp` path) stores a record of
-  your sign-in in Cloudflare Workers KV (Cloudflare's key-value store). That record holds your Google tokens in
-  encrypted form; the decryption key is itself encrypted with the tokens Claude
-  Code holds, and the server stores those Claude Code tokens only as hashes. So a
-  copy of Workers KV alone does not reveal your Google tokens. The server can
-  decrypt them only while it answers a request, because only a request carries
-  a Claude Code token. The record is stored under your Google account id and
-  labeled with your email; both are in plain text. File contents pass through
-  the server only while it answers a request; the server does not store or log them (see
-  `backend/src/mcp.ts` and `backend/src/drive.ts`).
-- **On your machine**, Claude Code keeps copies of the files it read (tool
-  results) under `~/.claude/projects/` until its own cleanup.
-- **To sign out**: `/mcp` → gdrive-reader → **Clear authentication**, and remove
-  Kurt-Folder-Reader at <https://myaccount.google.com/permissions>.
+- 指定資料夾：「列出 https://drive.google.com/drive/folders/… 裡的檔案」。你的 Google
+  帳號能開的資料夾都可以。
+- 不指定資料夾：「列出 Drive 資料夾裡的檔案」會列出預設資料夾，也就是 OakMega 為這份作業
+  分享的測試資料夾（一個 PDF、一張圖片）。你的帳號需要有它的存取權。
+- 接著詢問列出的檔案，例如「讀那個 PDF」「圖片裡有什麼」。
 
-## Troubleshooting
+上限：
 
-| What you see | What to do |
+- PDF 與純文字檔超過 10 MB、圖片超過 5 MB 不讀；回傳的文字超過 20 萬字元時只給前 20 萬字元。
+- 資料夾超過 2,000 個項目或 20 層時，只列出一部分。
+- 作者的伺服器用 Cloudflare 免費方案，每個請求最多 50 個對外請求、約 10 ms CPU 時間。每個
+  子資料夾至少要一個對外請求，讀檔前也會重列整個資料夾，所以子資料夾有幾十個時，列出和讀檔
+  都可能失敗；幾 MB 的檔案也可能因 CPU 時間不夠而失敗。
+- Google 對未驗證的應用程式限制總共 100 位新使用者，額滿後新帳號無法登入。
+
+## token 與資料存放
+
+- **你的電腦**：Claude Code token 在 macOS 存在鑰匙圈，其他系統存在 Claude Code 的
+  credentials 檔。Claude Code 也會把讀過的檔案內容留在 `~/.claude/projects/` 底下。
+- **伺服器**：在 Cloudflare Workers KV（Cloudflare 的 key-value 儲存）存一筆你的登入紀錄。
+  - 紀錄裡的 Google token 是加密的，解密金鑰又用 Claude Code token 加密；伺服器只存 Claude
+    Code token 的 hash。所以只拿到 KV，解不開 Google token。
+  - 每次請求都會帶 Claude Code token，伺服器在處理請求時解密，看得到 Google token 和檔案
+    內容。所以使用者要信任作者，和使用其他由廠商代管的 connector 一樣。
+  - Google token 能讀你整個 Drive。伺服器只讀你指定的資料夾，是程式的行為，不是權限的限制。
+  - 紀錄以你的 Google 帳號 ID 為 key、email 為標籤，兩者都是明文。
+  - 檔案內容只在處理請求時經過伺服器，不儲存也不記錄。
+- **登出**：`/mcp` → gdrive-reader → **Clear authentication**，再到
+  <https://myaccount.google.com/permissions> 移除 Kurt-Folder-Reader。移除後紀錄裡的
+  Google token 就失效；紀錄本身最長留到 30 天到期。
+
+設計細節見 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+## 疑難排解
+
+| 狀況 | 處理 |
 |---|---|
-| In `/mcp`, gdrive-reader shows **needs authentication** | Choose gdrive-reader → **Authenticate**. |
-| The sign-in page says **"Google Drive read access was not granted"** | You left the Drive checkbox unticked on Google's page. Sign in again (`/mcp` → gdrive-reader → **Authenticate**) and tick the checkbox. |
-| Google says **"Access blocked"** or that your admin has restricted the app | The admin of your Google Workspace (company or school) account blocks unverified third-party apps. Use a personal Gmail account that can open the folder. |
-| Claude answers with a different Google Drive tool | Another Google Drive integration is enabled, such as the Google Drive connector from claude.ai. Turn it off in `/mcp`, or say **"Use the gdrive-reader plugin"**. |
-| Claude says a file is **outside the folder** | The server reads only files inside the folder you named and its subfolders. Name the folder that contains the file. A folder with more than 2,000 entries or 20 levels is listed only in part, and files past that cut are reported the same way. |
-| Claude Code runs over SSH and the browser is on another machine | When you choose **Authenticate**, Claude Code also prints the sign-in URL; open it in the browser on your own machine and sign in. At the end the browser is sent to Claude Code's `localhost` page, which fails to load because Claude Code runs on the other machine. Copy that page's full URL from the address bar and paste it into your conversation with Claude; Claude uses that URL to finish the sign-in. |
+| 登入失敗，錯誤訊息是「Google Drive read access was not granted」 | 登入時沒勾 Drive 選項。重新登入並勾選。 |
+| Google 顯示「Access blocked」或說管理員限制了應用程式 | 公司或學校帳號的管理員封鎖了未驗證的應用程式。改用能開該資料夾的個人 Gmail 帳號。 |
+| Claude 用了別的 Google Drive 工具 | 另一個 Google Drive 整合（例如 claude.ai 的 connector）也開著。在 `/mcp` 關掉它，或說「用 gdrive-reader plugin」。 |
+| Claude 說檔案在資料夾外（outside the folder） | 伺服器只讀你指定的資料夾和它的子資料夾。請指定包含該檔案的資料夾。資料夾超過上限只列出一部分時，超出的檔案也會這樣回報。 |
+| Claude Code 在遠端主機（SSH）上，瀏覽器在你的電腦 | 選 **Authenticate** 時 Claude Code 會印出登入網址，在你電腦的瀏覽器打開並登入。最後瀏覽器跳到的 `localhost` 頁面會打不開，把網址列的完整網址貼給 Claude，它會用來完成登入。 |
 
-## Run your own server (self-host)
+## 開發
 
-You need a Google account, a Cloudflare account (the free plan handles small
-files and folders such as the take-home test folder; folders with dozens of
-subfolders, or files of several MB up to the 10 MB cap, may need the paid
-plan, see "Limits and residual risks" in [ARCHITECTURE.md](ARCHITECTURE.md)), Node.js
-with npm, and a clone of this repository.
-
-1. **Google Cloud project**: <https://console.cloud.google.com/> → create a project →
-   *APIs & Services* → enable **Google Drive API**.
-2. **OAuth client**: in the Cloud Console, open *Google Auth Platform*. A new
-   project first asks you to **Get started**: enter an app name without "Google"
-   or other Google product names such as "Drive" (saving fails otherwise), a
-   support email, audience **External**, and a contact email. Then *Clients* →
-   *Create client* → type **Web application**. Save the client ID and client
-   secret; step 3 uses them.
-3. **Server** (Cloudflare Workers): your Worker URL will be
-   `https://gdrive-reader-broker.<your-subdomain>.workers.dev`, where
-   `<your-subdomain>` is your account's workers.dev subdomain (shown in the
-   Cloudflare dashboard under *Workers & Pages*). Below, `<worker>` means that URL.
-   ```
-   cd backend
-   npm install
-   npx wrangler login
-   npx wrangler kv namespace create OAUTH_KV
-   ```
-   In `backend/wrangler.toml`, set the `id` under `[[kv_namespaces]]` to the id
-   that `npx wrangler kv namespace create OAUTH_KV` printed, and set
-   `GOOGLE_CLIENT_ID` (the client ID from step 2), `DEFAULT_FOLDER` (a Drive
-   folder URL) and `MCP_RESOURCE` (`<worker>/mcp`). Then deploy, and store the
-   client secret (the second command asks you to paste it):
-   ```
-   npx wrangler deploy
-   npx wrangler secret put GOOGLE_CLIENT_SECRET
-   ```
-4. **Back in Google Auth Platform**:
-   - *Clients* → your client → add the authorized redirect URI `<worker>/callback`.
-   - *Branding*: set the homepage `<worker>/`, privacy policy `<worker>/privacy`
-     (the Worker serves both), and authorized domain
-     `<your-subdomain>.workers.dev`.
-   - *Data Access*: add the scope `https://www.googleapis.com/auth/drive.readonly`.
-   - *Audience*: **Publish app** (the status becomes
-     "In production"). Or keep **Testing** and add your account as a test user;
-     a test user's sign-in expires after 7 days and must be repeated.
-5. **Plugin**: set the `url` in `plugins/gdrive-reader/.mcp.json` to
-   `<worker>/mcp`. If you installed the author's version, remove it first
-   (`/plugin uninstall gdrive-reader@gdrive-reader-marketplace`, then
-   `/plugin marketplace remove gdrive-reader-marketplace`). Then add your clone:
-   ```
-   /plugin marketplace add <path-to-your-clone>
-   /plugin install gdrive-reader@gdrive-reader-marketplace
-   ```
-
-## Development
-
-From the repository root:
+在 repo 根目錄：
 
 ```
-(cd backend && npm install && npm test)   # end-to-end tests of the sign-in flow and tools, against simulated Google services
-(cd backend && npx tsc --noEmit)          # type check
+(cd backend && npm install && npm test)   # 對模擬的 Google 服務跑登入流程與工具的測試
+(cd backend && npx tsc --noEmit)          # 型別檢查
 claude plugin validate --strict plugins/gdrive-reader
 ```
-
-The first version ran the MCP server on your machine and kept the Google tokens
-there; that version is tagged `v0.1.0-local-server`. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for why the server moved off your machine.
