@@ -1,19 +1,25 @@
 # Google Drive Reader — a Claude Code plugin
 
-Ask Claude Code about the files in a Google Drive folder. The plugin connects
-Claude Code to a remote MCP server that signs you in with Google (OAuth,
-read-only), lists a folder with its subfolders, and reads files: Google
-Docs/Sheets/Slides and text files as text, images as images, and PDFs as files
-Claude reads page by page (scanned PDFs included).
+Ask Claude Code about the files in a Google Drive folder. This plugin is the
+author's solution to a take-home assignment from OakMega. The plugin connects
+Claude Code to a remote MCP server that the author runs on Cloudflare Workers.
+(MCP, the Model Context Protocol, is how Claude Code calls outside tools.) The
+server signs you in with Google OAuth and asks only for read-only Drive access.
+It lists the files in the folder you name and in its subfolders, and reads
+files: Google Docs, Sheets and Slides and text files come back as text, images
+as images, and PDFs as files that Claude reads page by page, including scanned
+PDFs. For other file types, Claude is told the file cannot be read.
 
-It reads only. There is no search, write or change-watching.
+The plugin cannot search Drive, write to Drive, or watch files for changes.
 
-## Install (about 1 minute)
+## Install
 
-**Prerequisites**: Claude Code 2.1.310 or later (`claude --version`) and a Google
-account that can open the Drive folder. Nothing else to install.
+**Prerequisites**: Claude Code 2.1.310 or later (check with `claude --version`)
+and a Google account that can open the folder you want to read. Nothing else to
+install.
 
-In Claude Code:
+In Claude Code, add this repository as a plugin source (a "marketplace"), then
+install the plugin, named `gdrive-reader`, from it:
 
 ```
 /plugin marketplace add q33566/my_plugins
@@ -24,88 +30,121 @@ If Claude Code asks you to, run `/reload-plugins` (or restart Claude Code).
 
 ## Sign in (once)
 
-1. Run **`/mcp`**, select **gdrive-reader** (it shows "needs authentication") and
+1. Run `/mcp`, select gdrive-reader (it shows **needs authentication**) and
    choose **Authenticate**. Claude Code opens your browser.
-2. Pick your Google account. Google shows **"Google hasn't verified this app"**:
-   click **Advanced**, then **Go to Kurt-Folder-Reader (unsafe)** (the name of
-   the author's OAuth app).
-3. Allow both items, including **"See and download all your Google Drive
-   files"** (the server only ever reads, and only inside the folder you ask about).
-4. The browser says authentication succeeded; `/mcp` now shows gdrive-reader as
-   connected. Claude Code renews the sign-in by itself from now on.
+2. Pick your Google account. Google shows **"Google hasn't verified this app"**
+   because the author's OAuth app, Kurt-Folder-Reader, has not gone through
+   Google's verification (see [ARCHITECTURE.md](ARCHITECTURE.md)). Click
+   **Advanced**, then **Go to Kurt-Folder-Reader (unsafe)**.
+3. Tick the checkbox **"See and download all your Google Drive files"**, then
+   allow access. Google grants read access to your whole Drive; the server itself
+   reads only files inside the requested folder and its subfolders.
+4. The browser says authentication succeeded, and `/mcp` shows gdrive-reader as
+   connected. From now on Claude Code renews the sign-in automatically, so you do
+   not need to sign in again.
 
-If you ask Claude about the folder before signing in, Claude tells you to sign in
-and gives you the same link.
+If you ask Claude about a folder before signing in, Claude tells you to sign in
+and gives you the sign-in link.
 
 ## Use it
 
-- **"List the files in the Drive folder."** Without a folder, it uses the
-  take-home test folder.
-- **"Read the PDF"**, **"What is in the image?"**, or any question about a file.
-- Another folder: **"List the files in https://drive.google.com/drive/folders/…"**.
+- Name a folder: **"List the files in https://drive.google.com/drive/folders/…"**.
+  Any folder your Google account can open works.
+- Without a folder, **"List the files in the Drive folder"** lists the default
+  folder: the test folder OakMega shared for this take-home assignment (set as
+  `DEFAULT_FOLDER` in `backend/wrangler.toml`). Your Google account needs access
+  to it.
+- Then ask about a file in the listed folder. For the test folder, for example:
+  **"Read the PDF"** or **"What is in the image?"**.
 
-## Where your sign-in is stored
+## Where your tokens and data are stored
 
-- **Claude Code** keeps its token for this server in your system keychain
-  (macOS) or its credentials file.
-- **The server** keeps your Google tokens inside the sign-in grant, encrypted
-  with a key that only the token held by your Claude Code unlocks; its storage
-  holds only hashes of tokens. File contents pass through the server only while
-  answering a request and are never stored or logged.
+- **Claude Code** keeps the tokens this server issued to it (an access token and a
+  refresh token) in the macOS keychain, or in Claude Code's credentials file on
+  other systems.
+- **The server** (`https://gdrive-reader-broker.gdrive-reader-broker.workers.dev`,
+  the URL in `plugins/gdrive-reader/.mcp.json`) stores a record of your sign-in
+  in Cloudflare Workers KV. That record holds your Google tokens in encrypted
+  form; the decryption key is itself encrypted with the tokens Claude Code holds,
+  so the data in Workers KV cannot be decrypted without them. The server stores
+  those Claude Code tokens only as hashes. File contents pass through the server
+  only while it answers a request; the server does not store or log them (see
+  `backend/src/mcp.ts` and `backend/src/drive.ts`).
 - **To sign out**: `/mcp` → gdrive-reader → **Clear authentication**, and remove
-  the app at <https://myaccount.google.com/permissions>.
+  Kurt-Folder-Reader at <https://myaccount.google.com/permissions>.
 
 ## Troubleshooting
 
 | What you see | What to do |
 |---|---|
-| gdrive-reader shows **needs authentication** | Run `/mcp` → gdrive-reader → **Authenticate**. |
-| Sign-in says **"Google Drive read access was not granted"** | You left the Drive checkbox unticked on Google's page. Authenticate again and tick it. |
-| Google says **"Access blocked"** or the admin restricted the app | Your Google Workspace admin blocks unverified third-party apps. Use a personal Gmail account that can open the folder. |
-| Claude answers with a different Google Drive tool | You have the claude.ai Google Drive connector on. Turn it off in `/mcp`, or say "use the gdrive-reader plugin". |
-| "outside the folder" | Only files inside the folder you asked about (and its subfolders) can be read. |
-| Claude Code runs over SSH and the browser is on another machine | After you allow access, the browser fails to open a `localhost` page. Copy that page's full URL from the address bar and give it to Claude, which finishes the sign-in with it. |
+| In `/mcp`, gdrive-reader shows **needs authentication** | Choose gdrive-reader → **Authenticate**. |
+| The sign-in page says **"Google Drive read access was not granted"** | You left the Drive checkbox unticked on Google's page. Sign in again (`/mcp` → gdrive-reader → **Authenticate**) and tick the checkbox. |
+| Google says **"Access blocked"** or that your admin has restricted the app | The admin of your Google Workspace (company or school) account blocks unverified third-party apps. Use a personal Gmail account that can open the folder. |
+| Claude answers with a different Google Drive tool | Another Google Drive integration is enabled, such as the Google Drive connector from claude.ai. Turn it off in `/mcp`, or say **"Use the gdrive-reader plugin"**. |
+| Claude says a file is **outside the folder** | The server reads only files inside the folder you named and its subfolders. Name the folder that contains the file. |
+| Claude Code runs over SSH and the browser is on another machine | When you choose **Authenticate**, Claude Code also prints the sign-in URL; open it in the browser on your own machine and sign in. At the end the browser is sent to Claude Code's `localhost` page, which fails to load because Claude Code runs on the other machine. Copy that page's full URL from the address bar and paste it into your conversation with Claude; Claude uses that URL to finish the sign-in. |
 
-## Run it on your own Google Cloud project (self-host)
+## Run your own server (self-host)
+
+You need a Google account, a Cloudflare account (the free plan is enough for
+files within the limits listed in [ARCHITECTURE.md](ARCHITECTURE.md)), Node.js
+with npm, and a clone of this repository.
 
 1. **Google Cloud project**: <https://console.cloud.google.com/> → create a project →
    *APIs & Services* → enable **Google Drive API**.
-2. **OAuth client**: *Google Auth Platform* → *Clients* → *Create client* → type
-   **Web application**. Keep the client ID and secret.
-3. **Server** (Cloudflare Workers; the free plan handles files of a few MB):
+2. **OAuth client**: in the Cloud Console, open *Google Auth Platform*. A new
+   project first asks you to **Get started**: enter an app name without "Google"
+   or other Google product names such as "Drive" (saving fails otherwise), a
+   support email, audience **External**, and a contact email. Then *Clients* →
+   *Create client* → type **Web application**. Save the client ID and client
+   secret; step 3 uses them.
+3. **Server** (Cloudflare Workers): your Worker URL will be
+   `https://gdrive-reader-broker.<your-subdomain>.workers.dev`, where
+   `<your-subdomain>` is your account's workers.dev subdomain (shown in the
+   Cloudflare dashboard under *Workers & Pages*). Below, `<worker>` means that URL.
    ```
    cd backend
    npm install
    npx wrangler login
-   npx wrangler kv namespace create OAUTH_KV   # put the printed id in wrangler.toml
+   npx wrangler kv namespace create OAUTH_KV
    ```
-   In `backend/wrangler.toml` set `GOOGLE_CLIENT_ID`, `DEFAULT_FOLDER`, and
-   `MCP_RESOURCE` (`https://<worker>/mcp`, the URL you will deploy to). Then:
+   In `backend/wrangler.toml`, set the `id` under `[[kv_namespaces]]` to the id
+   that `npx wrangler kv namespace create OAUTH_KV` printed, and set
+   `GOOGLE_CLIENT_ID` (the client ID from step 2), `DEFAULT_FOLDER` (a Drive
+   folder URL) and `MCP_RESOURCE` (`<worker>/mcp`). Then deploy, and store the
+   client secret (the second command asks you to paste it):
    ```
    npx wrangler deploy
    npx wrangler secret put GOOGLE_CLIENT_SECRET
    ```
-4. **Back in Google Auth Platform** (`<worker>` is your Worker URL):
-   - *Clients* → your client → authorized redirect URI `<worker>/callback`.
-   - *Branding*: an app name without "Google" or other Google product names such
-     as "Drive" (saving fails otherwise), support email, homepage `<worker>/`,
-     privacy policy `<worker>/privacy` (the Worker serves both), authorized
-     domain `<your-subdomain>.workers.dev`.
+4. **Back in Google Auth Platform**:
+   - *Clients* → your client → add the authorized redirect URI `<worker>/callback`.
+   - *Branding*: set the homepage `<worker>/`, privacy policy `<worker>/privacy`
+     (the Worker serves both), and authorized domain
+     `<your-subdomain>.workers.dev`.
    - *Data Access*: add the scope `https://www.googleapis.com/auth/drive.readonly`.
-   - *Audience*: user type **External**, then **Publish app** (In production).
-     Or keep *Testing* and add your account as a test user — test-user sign-ins
-     expire after 7 days.
+   - *Audience*: **Publish app** (the status becomes
+     "In production"). Or keep **Testing** and add your account as a test user;
+     a test user's sign-in expires after 7 days and must be repeated.
 5. **Plugin**: set the `url` in `plugins/gdrive-reader/.mcp.json` to
-   `<worker>/mcp` and install the plugin from your copy of the repository.
+   `<worker>/mcp`. If you installed the author's version, remove it first
+   (`/plugin uninstall gdrive-reader@gdrive-reader-marketplace`, then
+   `/plugin marketplace remove gdrive-reader-marketplace`). Then add your clone:
+   ```
+   /plugin marketplace add <path-to-your-clone>
+   /plugin install gdrive-reader@gdrive-reader-marketplace
+   ```
 
 ## Development
 
+From the repository root:
+
 ```
-cd backend && npm install && npm test     # sign-in flow and tools end to end, with a fake Google
-npx tsc --noEmit                          # type check
+(cd backend && npm install && npm test)   # end-to-end tests of the sign-in flow and tools, against simulated Google services
+(cd backend && npx tsc --noEmit)          # type check
 claude plugin validate --strict plugins/gdrive-reader
 ```
 
-The first version ran the MCP server locally (Python, started by uv) and kept the
-tokens on the user's machine; it is tagged `v0.1.0-local-server`. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for why it moved to a remote server.
+The first version ran the MCP server on your machine and kept the Google tokens
+there; that version is tagged `v0.1.0-local-server`. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for why the server moved off your machine.
